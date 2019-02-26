@@ -1,0 +1,211 @@
+---
+layout:     post
+title:      "第三届阿里云安全算法初赛7th方案"
+subtitle:   "算法"
+date:       2018-09-25
+author:     "hadxu"
+header-img: "img/hadxu.jpg"
+tags:
+    - python
+    - 数据挖掘
+---
+
+# 第三届阿里云安全初赛7th方案
+
+第三届阿里云安全算法挑战赛结束，成绩不是很理想，但是进入了决赛，认识了很多很多超级大佬，这波不亏。下面就是我们组的方案，决赛与初赛一致，决赛只是将初赛的代码跑了一遍，但是由于准备不是特别充足，明年再来。
+[第三届阿里云安全算法](https://tianchi.aliyun.com/competition/introduction.htm?spm=5176.100066.0.0.6acd33afjXIJ41&raceId=231668)
+
+**千万不要写for**
+
+1. 数据初探
+
+```python
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import lightgbm as lgb
+from sklearn.cross_validation import train_test_split
+import gc
+from sklearn.preprocessing import OneHotEncoder
+from tqdm import tqdm
+%matplotlib inline
+
+tqdm.pandas()
+
+from contextlib import contextmanager
+@contextmanager
+def timer(name):
+    import time
+    startTime = time.time()
+    yield
+    elapsedTime = time.time() - startTime
+    print('[{}] finished in {} s'.format(name, int(elapsedTime)))
+
+train = pd.read_csv('final_train.csv')
+train_data = train[['file_id','label']].drop_duplicates()
+train_data.head()
+
+> 
+	file_id	label
+0	1	5
+6786	2	2
+7602	3	0
+8065	4	0
+10111	5	0
+```
+
+其中```file_id```是文件编号，```label```是病毒类型。
+
+
+2. 数据聚合
+
+```python
+api_opt = ['count','nunique']
+for opt in api_opt:
+    tmp = train.groupby(['file_id'])['api'].agg({'fileid_api_' + opt: opt}).reset_index() 
+    train_data = pd.merge(train_data,tmp,how='left', on='file_id')
+tid_opt = ['count','nunique','max','min','median','std'] 
+
+for opt in tid_opt:
+    print(opt)
+    tmp = train.groupby(['file_id'])['tid'].agg({'fileid_tid_' + opt: opt}).reset_index() 
+    train_data = pd.merge(train_data,tmp,how='left', on='file_id')
+
+secs = [0.2,0.4,0.6,0.8]
+for sec in secs: 
+    train_data['fileid_tid_quantile_' + str(sec * 100)] = train.groupby(['file_id'])['tid'].quantile(sec).values
+train_data['fileid_tid_range'] = train.groupby(['file_id'])['tid'].quantile(0.975).values - train.groupby(['file_id'])['tid'].quantile(0.0125).values
+
+index_opt = ['count','nunique','max','min','median','std'] 
+for opt in index_opt:
+    print(opt)
+    tmp = train.groupby(['file_id'])['index'].agg({'fileid_index_' + opt: opt}).reset_index() 
+    train_data = pd.merge(train_data,tmp,how='left', on='file_id')
+```
+
+3. 对调用api进行统计特征。(计数、比例)
+
+**使用多进程方案**
+
+```python
+all_apis = set(train['api'])
+def api_num(x, api_name):
+    x = x.split(' ')
+    return x.count(api_name)
+
+def api_rate_num(x, api_name):
+    x = x.split(' ')
+    return x.count(api_name) / len(x)
+
+def apply_mul_core(df):
+    import multiprocessing as mlp
+    num_cpu = 32
+    pool = mlp.Pool(num_cpu)
+    batch_num = 1 + len(df) // num_cpu
+    results = []
+    for i in range(num_cpu):
+        task = df[i*batch_num : (i+1)*batch_num]
+        result = pool.apply_async(multi_task,(task,))
+        results.append(result)
+    pool.close()
+    pool.join()
+    res = pd.DataFrame({})
+    for result in results:
+        feat = result.get()
+        res = pd.concat([res, feat])
+    return res
+
+temp = train.groupby(['file_id'])['api'].apply(lambda x:' '.join(list(x))).to_frame().reset_index()
+train_data = pd.merge(train_data,temp,how='left', on='file_id')
+
+all_apis = list(all_apis)
+
+def multi_task(df):
+    for name in tqdm(all_apis):
+        df[f'api_{name}_num'] = df['api'].apply(api_num, api_name=name)
+        df[f'api_{name}_rate_num'] = df['api'].apply(api_rate_num, api_name=name)
+    return df
+
+df = apply_mul_core(train_data)
+```
+
+3. 训练
+
+```python
+train_X = df.drop(['file_id','label', 'api'],axis=1).values
+train_Y = df['label'].values
+from sklearn.cross_validation import StratifiedKFold
+import lightgbm as lgb
+
+skf = StratifiedKFold(train_Y, n_folds=5, shuffle=True, random_state=2018)
+for i,(tr_idx,val_idx) in enumerate(skf):
+        print('FOLD: ',i)
+        X_train,X_train_label = train_X[tr_idx],train_Y[tr_idx]
+        X_val,X_val_label = train_X[val_idx],train_Y[val_idx]
+        dtrain = lgb.Dataset(X_train,X_train_label) 
+        dval   = lgb.Dataset(X_val,X_val_label, reference = dtrain)   
+        params = {
+                'task':'train', 
+                'boosting_type':'gbdt',
+                'num_leaves': 15,
+                'objective': 'multiclass',
+                'num_class':8,
+                'learning_rate': 0.01,
+                'feature_fraction': 0.85,
+                'subsample':0.85,
+                'num_threads': 28,
+                'metric':'multi_logloss',
+                'seed':2018
+            }
+        model = lgb.train(params, 
+                          dtrain, 
+                          num_boost_round=100000,
+                          valid_sets=[dval],
+                          verbose_eval=100, 
+                          early_stopping_rounds=100)
+```
+
+没有使用tfidf特征，cv0.32。
+
+
+4. 使用tfidf特征
+
+```python
+from sklearn.feature_extraction.text  import TfidfVectorizer
+import os 
+import pickle
+n_range=(1,4)  #
+max_feature=100000 #
+
+if os.path.exists("API-Tfidf_%s.pkl"%str(n_range))==False:
+    print("xx")
+    api_tfidf=TfidfVectorizer(ngram_range=n_range,max_features=max_feature,min_df=2,max_df=0.97)
+    api_tfidf.fit(train_data['api_text'].values)
+    with open("API-Tfidf_%s.pkl"%str(n_range),'wb') as f:
+        pickle.dump(api_tfidf,f)
+        
+else:
+    with open("API-Tfidf_%s.pkl"%str(n_range),'rb')  as f:
+        api_tfidf=pickle.load(f)
+
+train_x=api_tfidf.transform(train_data['api_text'].values)
+test_x=api_tfidf.transform(test_data['api_text'].values)
+```
+
+再次进行训练，能够进入top10。
+
+#### 经验
+
+1. 此次准备非常不够充分，代码没有做任何优化，导致最后比赛在数据处理方面耗费了很长很长时间。
+2. 善于思考，总结代码，总结pandas的使用方法，一定要榨干机器，让机器的每一点内存，每一个cpu都要运作起来。
+3. 继续努力，向前进。
+
+
+
+
+
+
+
+
+

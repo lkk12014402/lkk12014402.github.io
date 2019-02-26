@@ -1,0 +1,531 @@
+---
+layout:     post
+title:      "Thunder 一种深度学习框架"
+subtitle:   "LSTM"
+date:       2018-03-07
+author:     "hadxu"
+header-img: "img/in-post/Thunder/thunder.jpg"
+tags:
+    - Thunder
+    - Python
+    - cse599
+---
+
+深度学习框架层出不穷，我们在学习的时候也是非常累，各种各样的框架都要学习，于是，一直萌生了一种想自己写一套框架出来，正好陈天奇的分布式深度学习课程满足了我的要求，于是在第二节课上面我实现了自己的深度学习框架——Thunder。
+
+深度学习框架需要的知识非常多，包括C/C++/Python/CUDA/CUDNN等知识，同时还包括makefile文件编写，这是非常考验一个程序员的工程能力的。这篇博客就对我实现的Thunder框架进行剖析，正好给自己回顾一下框架的编写。
+
+## 深度学习框架核心概念--自动求导
+在深度学习中，最常见的表示数据的方式就是使用图来表示数据，而数据与数据之间的操作变成图节点之间的操作，比如深度学习框架Tensorflow以及Pytorch都是图形式的，不过不同的是，Tensorflow是静态图，而Pytorch是动态图。因此采用图来表示数据节点是可行的。
+
+#### 图的表示
+在我们的Thunder中，图的表示如下：
+
+```python
+class Node(object):
+    def __init__(self):
+        self.inputs = []
+        self.op = None
+        self.const = None
+        self.name = ""
+```
+
+当我们建立一个图时，比如
+```python
+ f(x1,x2)=x1*2+x2
+```
+那么，该图为
+
+![](/img/in-post/Thunder/fig1.jpg)
+
+同时，该图的各种运算，可以定义
+
+```python
+class Op(object):
+    def __call__(self):
+        new_node = Node()
+        new_node.op = self
+        return new_node
+
+    def compute(self, node, input_vals, output_val, use_numpy=True):
+        raise NotImplementedError
+
+    def gradient(self, node, output_grads):
+        raise NotImplementedError
+
+    def infer_shape(self, node, input_shapes):
+        raise NotImplementedError
+```
+
+想要各种运算方法的话，我们可以继承该类，比如加法操作：
+
+```python
+class AddOp(Op):
+    def __call__(self, nodeA, nodeB):
+        new_node = Op.__call__(self)
+        new_node.inputs = [nodeA, nodeB]
+        new_node.name = '({}+{})'.format(nodeA.name, nodeB.name)
+        return new_node
+
+    def compute(self, node, input_vals, output_val, use_numpy=True):
+        assert len(input_vals) == 2
+        if use_numpy:
+            output_val[:] = input_vals[0] + input_vals[1]
+        else:
+            pass
+
+    def gradient(self, node, output_grads):
+
+        return [output_grads, output_grads]
+
+    def infer_shape(self, node, input_shapes):
+        assert len(input_shapes) == 2
+        assert input_shapes[0] == input_shapes[1]
+        return input_shapes[0]
+```
+
+
+那么，有了该图之后，如何求得```y```的值呢？这就是采用**拓扑排序**，先将没有输入节点的值计算，其次依赖输入的值计算，那么就实现了依赖关系的计算。
+
+```Python
+# 拓扑排序
+def find_topo_sort(node_list):
+    visited = set()
+    topo_order = []
+    for node in node_list:
+        depth_first_search(node, visited, topo_order)
+    return topo_order
+
+
+def depth_first_search(node, visited, topo_order):
+    if node in visited:
+        return
+    visited.add(node)
+    for n in node.inputs:
+        depth_first_search(n, visited, topo_order)
+    topo_order.append(node)
+
+
+def sum_node_list(node_list):
+    from operator import add
+    from functools import reduce
+    return reduce(add, node_list)
+```
+
+## 前向传播已经实现，那么如何实现反向传播呢？
+
+Thunder实现了```Audodiff```,自动求导？如何实现？
+
+根据反向传播，
+
+![](/img/in-post/Thunder/fig2.jpg)
+
+那么就显而易见了，只要将逆序求解即可。
+
+```
+def gradients(output_node, node_list):
+    node_to_output_grads_list = {}
+    node_to_output_grads_list[output_node] = [ones_like(output_node)]
+    node_to_output_grad = {}
+    reverse_topo_order = reversed(find_topo_sort([output_node]))
+    for node in reverse_topo_order:
+        output_grad = sum_node_list(node_to_output_grads_list[node])
+        node_to_output_grad[node] = output_grad
+
+        input_grads_list = node.op.gradient(node, output_grad)
+        for i in range(len(node.inputs)):
+            if node.inputs[i] not in node_to_output_grads_list:
+                node_to_output_grads_list[node.inputs[i]] = []
+            node_to_output_grads_list[node.inputs[i]].append(input_grads_list[i])
+
+    grad_node_list = [node_to_output_grad[node] for node in node_list]
+    return grad_node_list
+```
+
+
+# CUDA 加速实现
+
+其实我学习这门课程最主要的目的就是学习CUDA编程，如何将神经网络进行加速一直是工业界的重点。
+
+在Thunder中，只要关于矩阵计算都使用了GPU加速。
+
+那么是如何实现这一个过程的？
+
+
+### 首先定义DLArray
+> 就是DLArray就是最基本的运算单位，
+
+```
+DLSYS_EXTERN_C {
+    typedef enum{
+        kCPU = 1,
+        kGPU = 2,
+    }DLDeviceType;
+    typedef struct{
+        int device_id;
+        DLDeviceType device_type;
+    }DLContext;
+    typedef struct{
+        void *data;
+        DLContext ctx;
+        int ndim;
+        int64_t *shape;
+    }DLArray;
+}
+```
+
+### 在cpu_device_api中实现cpu的操作
+
+### 在cuda_device_api中实现cuda的操作
+
+## 最终在c_runtime_api中实现各种数据操作
+
+```
+DLSYS_EXTERN_C {
+    typedef int64_t index_t;
+    typedef DLArray *DLArrayHandle;
+    typedef void *DLStreamHandle;
+
+    int DLArrayAlloc(const index_t *shape, index_t ndim, DLContext ctx,
+                 DLArrayHandle *out);
+    int DLArrayFree(DLArrayHandle handle);
+    int DLArrayCopyFromTo(DLArrayHandle from, DLArrayHandle to,
+                      DLStreamHandle stream);
+    int DLGpuArraySet(DLArrayHandle arr, float value);
+    int DLArrayReshape(const DLArrayHandle handle, const index_t *new_shape, index_t new_dim);
+
+    int DLGpuBroadcastTo(const DLArrayHandle input, DLArrayHandle output);
+
+    int DLGpuReduceSumAxisZero(const DLArrayHandle input, DLArrayHandle output);
+
+    int DLGpuMatrixElementwiseAdd(const DLArrayHandle matA,
+                              const DLArrayHandle matB, DLArrayHandle output);
+    int DLGpuMatrixElementwiseAddByConst(const DLArrayHandle input, float val,
+                                     DLArrayHandle output);
+
+
+    int DLGpuMatrixElementwiseSubtract(const DLArrayHandle matA,
+                                   const DLArrayHandle matB, DLArrayHandle output);
+
+    int DLGpuMatrixElementwiseSubtractByConst(const DLArrayHandle input, float val,
+                                          DLArrayHandle output);
+    int DLGpuMatrixElementwiseMultiply(
+        const DLArrayHandle matA, const DLArrayHandle matB, DLArrayHandle output);
+    int DLGpuMatrixMultiplyByConst(const DLArrayHandle input, float val,
+                               DLArrayHandle output);
+
+    int DLGpuMatrixElementwiseDivByConst(const DLArrayHandle matA, float val,
+                                     DLArrayHandle output);
+
+
+    int DLGpuMatrixMultiply(const DLArrayHandle matA, bool transposeA,
+                        const DLArrayHandle matB, bool transposeB,
+                        DLArrayHandle matC);
+
+    int DLGpuRelu(const DLArrayHandle input, DLArrayHandle output);
+
+    int DLGpuReluGradient(const DLArrayHandle input, const DLArrayHandle in_grad,
+                      DLArrayHandle output);
+
+    int DLGpuSoftmax(const DLArrayHandle input, DLArrayHandle output);
+
+
+    int DLGpuSoftmaxCrossEntropy(const DLArrayHandle input_a,
+                             const DLArrayHandle input_b,
+                             DLArrayHandle output);
+
+    int DLGpuMatrixElementwiseSqrt(const DLArrayHandle input_a, DLArrayHandle output);
+}
+```
+
+同时，在```gpu_op.cu```中实现各种CUDA方法。
+
+比如DLGpuMatrixElementwiseAdd
+
+```C++
+__global__ void matrix_elementwise_add(const float *a, const float *b, float *c,
+                                       int n) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < n) {
+        c[index] = a[index] + b[index];
+    }
+}
+
+int DLGpuMatrixElementwiseAdd(const DLArrayHandle matA,
+                              const DLArrayHandle matB, DLArrayHandle output) {
+    int n = 1;
+    for (int i = 0; i < output->ndim; i++) {
+        n = n * output->shape[i];
+    }
+    const float *data_A = (const float *) matA->data;
+    const float *data_B = (const float *) matB->data;
+    float *data_output = (float *) output->data;
+
+    int threads_per_block = 1024;
+    int num_blocks = (n + threads_per_block - 1) / threads_per_block;
+
+    matrix_elementwise_add << < num_blocks, threads_per_block >> > (data_A, data_B,
+            data_output, n);
+    return 0;
+}
+```
+
+通过调用CUDA的全局线程来实现快速运算。
+
+接下来就是将源代码编译成so文件，这里需要注意的是 首先将cu文件编译成```.o```文件
+
+```shell
+build/obj/%.o: src/%.cu
+	@mkdir -p build/obj
+	$(NVCC) $(ARCH) $(NVCC_FLAGS) -c $< -o $@
+```
+
+然后将其编译成so文件
+
+```shell
+build/lib/libc_runtime_api.so: $(OBJS)
+	@mkdir -p build/lib
+	$(CC) -shared $^ -o $@ $(LD_FLAGS)
+```
+
+其中，编译选项为
+
+```shell
+CUDA_DIR = /usr/local/cuda
+
+CC_SRCS := $(wildcard src/*.cc)
+CC_OBJS := ${CC_SRCS:src/%.cc=build/obj/%.o}
+CUDA_SRCS := $(wildcard src/*.cu)
+CUDA_OBJS := ${CUDA_SRCS:src/%.cu=build/obj/%.o}
+OBJS := $(CC_OBJS) $(CUDA_OBJS)
+
+CC = g++
+WARNINGS = -Wall -Wfatal-errors -Wno-unused -Wno-unused-result
+CC_FLAGS = -std=c++11 -fPIC $(WARNINGS) -I$(CUDA_DIR)/include
+LD_FLAGS = -L$(CUDA_DIR)/lib64 -lcuda -lcudart -lcublas
+
+NVCC = nvcc
+NVCC_FLAGS = -std=c++11 --compiler-options '-fPIC'
+ARCH = -gencode arch=compute_30,code=sm_30 \
+       -gencode arch=compute_35,code=sm_35 \
+       -gencode arch=compute_50,code=[sm_50,compute_50] \
+       -gencode arch=compute_52,code=[sm_52,compute_52]
+```
+
+一旦将其编译成so文件，那么就需要Python进行调用
+
+```python
+def _load_lib():
+    lib_root = Path(__file__).parents[2]
+    lib_path = os.path.join(lib_root, 'cuda/build/lib')
+
+    path_to_so_file = os.path.join(lib_path, 'libc_runtime_api.so')
+    lib = ctypes.CDLL(path_to_so_file, ctypes.RTLD_GLOBAL)
+    return lib
+```
+
+定义ctypes类型，保证Python类型传到C进行兼容
+
+```
+class DLContext(ctypes.Structure):
+    _fields_ = [("device_id", ctypes.c_int),
+                ("device_type", ctypes.c_int)]
+
+    MASK2STR = {
+        1: 'cpu',
+        2: 'gpu',
+    }
+
+    def __init__(self, device_id, device_type):
+        super(DLContext, self).__init__()
+        self.device_id = device_id
+        self.device_type = device_type
+
+    def __repr__(self):
+        return "%s(%d)" % (DLContext.MASK2STR[self.device_type], self.device_id)
+
+
+class DLArray(ctypes.Structure):
+    _fields_ = [("data", ctypes.c_void_p),
+                ("ctx", DLContext),
+                ("ndim", ctypes.c_int),
+                ("shape", ctypes.POINTER(ctypes.c_int64))]
+
+DLArrayHandle = ctypes.POINTER(DLArray)
+```
+
+同时将C语言中定义的各种CUDA操作进行汇总：
+
+```python
+import ctypes
+from ._base import _LIB
+from . import ndarray as _nd
+
+
+def array_set(arr, value):
+    assert isinstance(arr, _nd.NDArray)
+    _LIB.DLGpuArraySet(arr.handle, ctypes.c_float(value))
+
+...
+```
+
+当编译完，就可以进行测试
+
+```python
+ctx = ndarray.gpu(0)
+shape = (5000, 2000)
+arr_x = ndarray.empty(shape, ctx=ctx)
+gpu_op.array_set(arr_x, 1.)
+x = arr_x.asnumpy()
+np.testing.assert_allclose(np.ones(shape), x)
+gpu_op.array_set(arr_x, 0.)
+x = arr_x.asnumpy()
+np.testing.assert_allclose(np.zeros(shape), x)
+```
+
+进行mnist测试：
+
+```python
+__author__ = 'haxu'
+
+import numpy as np
+import thunder as th
+import thunder.autodiff as ad
+
+
+def measure_accuracy(activation, data, use_gpu=False):
+    X_val, y_val = data
+    executor = ad.Executor([activation], use_gpu=use_gpu)
+    prob_val, = executor.run(feed_shapes={X: X_val})
+    if use_gpu:
+        prob_val = prob_val.asnumpy()
+    correct = np.sum(np.equal(y_val, np.argmax(prob_val, axis=1)))
+    percentage = (correct / (y_val.shape[0])) * 100.00
+    return percentage
+
+
+def build_graph(X, y, input_size, hid_1_size, hid_2_size, output_size):
+    rand = np.random.RandomState(seed=1024)
+    W1 = ad.Parameter(name="W1", init=rand.normal(scale=0.1, size=(input_size, hid_1_size)))
+    b1 = ad.Parameter(name="b1", init=rand.normal(scale=0.1, size=(hid_1_size)))
+
+    W2 = ad.Parameter(name="W2", init=rand.normal(scale=0.1, size=(hid_1_size, hid_2_size)))
+    b2 = ad.Parameter(name="b2", init=rand.normal(scale=0.1, size=(hid_2_size)))
+
+    W3 = ad.Parameter(name="W3", init=rand.normal(scale=0.1, size=(hid_2_size, output_size)))
+    b3 = ad.Parameter(name="b3", init=rand.normal(scale=0.1, size=(output_size)))
+
+    z1 = ad.matmul(X, W1)
+    hidden_1 = z1 + ad.broadcast_to(b1, z1)
+    activation_1 = th.nn.relu(hidden_1)
+
+    z2 = ad.matmul(activation_1, W2)
+    hidden_2 = z2 + ad.broadcast_to(b2, z2)
+    activation_2 = th.nn.relu(hidden_2)
+
+    z3 = ad.matmul(activation_2, W3)
+    hidden_3 = z3 + ad.broadcast_to(b3, z3)
+    loss = th.nn.softmax_cross_entropy_with_logits(hidden_3, y)
+    return loss, W1, b1, W2, b2, W3, b3, hidden_3
+
+
+if __name__ == '__main__':
+    use_gpu = False
+    data = th.datasets.MNIST(batch_size=128)
+
+    batch_generator = data.train_batch_generator()
+
+    input_size = data.num_features()
+    hid_1_size = 256
+    hid_2_size = 100
+    output_size = 10
+
+    lr = 1e-3
+
+    X = ad.Variable(name="X")
+    y = ad.Variable(name='y')
+
+    loss, W1, b1, W2, b2, W3, b3, logit = build_graph(X, y, input_size, hid_1_size, hid_2_size, output_size)
+
+    optimizer = th.optim.SGD(loss, params=[W1, b1, W2, b2, W3, b3], lr=lr, use_gpu=use_gpu)
+
+    for i in range(100):
+        X_batch, y_batch = next(batch_generator)
+        loss_now = optimizer.step(feed_dict={X: X_batch, y: y_batch})
+        if i <= 10 or (i <= 100 and i % 10 == 0) or (i <= 1000 and i % 100 == 0) or (i <= 10000 and i % 500 == 0):
+            fmt_str = 'iter: {0:>5d} cost: {1:>8.5f}'
+            print(fmt_str.format(i, loss_now[0]))
+    val_acc = measure_accuracy(logit, data.validation(), use_gpu=use_gpu)
+    print('Validation accuracy: {:>.2f}'.format(val_acc))
+
+    test_acc = measure_accuracy(logit, data.testing(), use_gpu=use_gpu)
+    print('Testing accuracy: {:>.2f}'.format(test_acc))
+```
+
+> 使用CPU 时间大概 9s,使用GPU时间为4s。
+因此，可以发现，GPU是深度学习的利器。
+
+
+# 参考资料
+
+1. [Pytorch Blog](http://pytorch.org/blog/)
+
+2. [Tensorflow](https://www.tensorflow.org)
+
+3. [cse599g1](http://dlsys.cs.washington.edu)
+
+4. [MXnet](https://mxnet.apache.org)
+
+5. [CUDA](https://developer.nvidia.com/cudnn)
+
+6. [cuda_tutorial](https://github.com/yhtang/CUDA-tutorial/tree/master/exercise)
+
+7. [Aurora](https://github.com/upul/Aurora)
+
+8. [DyNet](https://github.com/clab/dynet)
+
+## 2018年3月7日 by hadxu hadxu123@gmail.com
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

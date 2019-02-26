@@ -1,0 +1,666 @@
+---
+layout:     post
+title:      "从零实现深度学习框架(第一天)"
+subtitle:   "CUDA C++ Python"
+date:       2018-03-12
+author:     "hadxu"
+header-img: "img/in-post/Thunder/thunder.jpg"
+tags:
+    - Python
+    - cse599
+---
+
+# 第一天(构建数据结构，无缝切换GPU与CPU)
+
+深度学习框架层出不穷，作为学生，需要学习的东西特别多，常见的深度学习框架有```Tensorflow,Caffe,Theano,Pytorch,Mxnet,Keras```等，这些深度学习被广泛应用于计算机视觉、语音识别、自然语言处理等领域，并取得了很好的效果。
+
+#### Theano
+
+诞生于LISA实验室，也是我接触的第一个深度学习框架，大概是2014年，Theano以求导透明而出名，因此我第一次接触深度学习框架就特别喜欢这种以符号来进行运算的机制，但是Theano难以调试，因此我在发现了Keras框架后，就一直使用Keras来作为自己的深度学习框架。
+
+#### Keras
+
+一个非常出名的深度学习框架，这种框架并不从底层实现，封装了底层框架的接口```Theano,Tensorflow```,因此更加抽象，更加通用。可以使用几行代码感受下深度学习的搭建过程
+
+```
+from keras.models import Sequential
+model = Sequential()
+model.add(Dense(units=64, activation='relu', input_dim=100))
+model.add(Dense(units=10, activation='softmax'))
+model.compile(loss='categorical_crossentropy',
+              optimizer='sgd',
+              metrics=['accuracy'])
+model.fit(x_train, y_train, epochs=5, batch_size=32)
+model.train_on_batch(x_batch, y_batch)
+loss_and_metrics = model.evaluate(x_test, y_test, batch_size=128)
+classes = model.predict(x_test, batch_size=128)
+```
+
+没错，就是这么简单，深度学习就是这么简单。
+
+#### Tensorflow
+
+2015年11月10日，Google宣布推出全新的机器学习框架```Tensorflow```,这是一种全新的机器学习框架，主要针对于神经网络的计算，同时Google的巨大影响力以及强大的推广能力，Tensorflow一推出就获得了很大的反响。Tensorlow采用了```Python```以及```C++```作为编程接口。
+
+#### Pytorch
+
+2017年初，Facebook推出了自己的深度学习框架```Pytorch```,这是一种更加简单的深度学习图框架，采用了动态图模型，可以感受一下
+
+```Python
+# -*- coding: utf-8 -*-
+import torch
+from torch.autograd import Variable
+
+# N is batch size; D_in is input dimension;
+# H is hidden dimension; D_out is output dimension.
+N, D_in, H, D_out = 64, 1000, 100, 10
+
+# Create random Tensors to hold inputs and outputs, and wrap them in Variables.
+x = Variable(torch.randn(N, D_in))
+y = Variable(torch.randn(N, D_out), requires_grad=False)
+
+# Use the nn package to define our model and loss function.
+model = torch.nn.Sequential(
+    torch.nn.Linear(D_in, H),
+    torch.nn.ReLU(),
+    torch.nn.Linear(H, D_out),
+)
+loss_fn = torch.nn.MSELoss(size_average=False)
+
+# Use the optim package to define an Optimizer that will update the weights of
+# the model for us. Here we will use Adam; the optim package contains many other
+# optimization algoriths. The first argument to the Adam constructor tells the
+# optimizer which Variables it should update.
+learning_rate = 1e-4
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+for t in range(500):
+    # Forward pass: compute predicted y by passing x to the model.
+    y_pred = model(x)
+
+    # Compute and print loss.
+    loss = loss_fn(y_pred, y)
+    print(t, loss.data[0])
+
+    # Before the backward pass, use the optimizer object to zero all of the
+    # gradients for the variables it will update (which are the learnable
+    # weights of the model). This is because by default, gradients are
+    # accumulated in buffers( i.e, not overwritten) whenever .backward()
+    # is called. Checkout docs of torch.autograd.backward for more details.
+    optimizer.zero_grad()
+
+    # Backward pass: compute gradient of the loss with respect to model
+    # parameters
+    loss.backward()
+
+    # Calling the step function on an Optimizer makes an update to its
+    # parameters
+    optimizer.step()
+```
+
+这是```Pytorch```官网的一个实例，简单实现了神经网络的回归模型。如果学过```Tensorflow```,Tensorflow需要构建图以后，再进行数据的传入，对于开发者调试来说，这是非常复杂的，我接触```Tensorflow```,报错一直出现在```session```中，很难知道哪里出现问题，因此，我的建议是
+
+### 做研究选Pytorch，做工程Tensorflow。
+
+***
+
+## 构建自己的框架数据结构
+
+> 初想，一个数据结构能够在GPU与CPU之间无缝切换，因此该数据结构必须要有上下文，同时有维度以及数据存放的地方
+
+新建```src```文件夹，新建头文件```dlarray.h```
+
+```cpp
+#ifndef DLSYS_DLARRAY_H
+#define DLSYS_DLARRAY_H
+
+
+#ifdef __cplusplus
+#define DLSYS_EXTERN_C extern "C"
+#else
+#define DLSYS_EXTERN_C
+#endif
+
+#include <cstddef>
+#include <cstdint>
+
+DLSYS_EXTERN_C {
+    typedef enum {
+        kCPU = 1,
+        kGPU = 2,
+    }DLDeviceType;
+
+    typedef struct {
+        int device_id;
+        DLDeviceType device_type;
+    }DLContext;
+
+    // 无缝切换的数据结构
+    typedef struct {
+        void *data;    // 数据
+        DLContext ctx; // 上下文  
+        int ndim;   // 维度
+        int64_t *shape;  // 每一个维度的大小
+    }DLArray;
+}
+#endif //DLSYS_DLARRAY_H
+```
+
+那么，下面就需要对该数据结构进行操作，同时分为CPU操作和GPU操作。为了使对设备操作统一起来，我们定义抽象类进行对各种设备的操作
+
+新建```device_api.h```
+
+```cpp
+//
+// Created by hadxu on 2018/3/9.
+//
+
+#ifndef DLSYS_DEVICE_API_H
+#define DLSYS_DEVICE_API_H
+
+#include <cassert>
+#include <cstring>
+class DeviceAPI {
+public:
+    virtual ~DeviceAPI() = default;
+
+    virtual void *AllocDataSpace(DLContext ctx, size_t size, size_t algment) = 0;
+
+    virtual void FreeDataSpace(DLContext ctx, void *ptr) = 0;
+
+    virtual void CopyDataFromTo(const void *from, void *to, size_t size,
+                                DLContext ctx_from, DLContext ctx_to,
+                                DLStreamHandle stream) = 0;
+
+
+    virtual void StreamSync(DLContext ctx, DLStreamHandle stream) = 0;
+
+};
+
+#endif //DLSYS_DEVICE_API_H
+```
+
+
+> 这段代码的C++11特性蛮多的，首先是```=default```生成默认构造函数， 虚函数```=0```表示该函数为纯虚函数，那么这个类定义了4种方法，分别为```AllocDataSpace```分配空间，```FreeDataSpace```释放空间,```CopyDataFromTo```转移数据以及```StreamSync```流同步。
+
+定义完设备的抽象方法，需要具体到某一个设备进行操作，首先定义各个设备的操作方法。
+
+新建```c_runtime_api.h```文件
+
+```cpp
+//
+// Created by hadxu on 2018/3/9.
+//
+#ifndef DLSYS_C_RUNTIME_API_H
+#define DLSYS_C_RUNTIME_API_H
+
+#ifdef __cplusplus
+#define DLSYS_EXTERN_C extern "C"
+#else
+#define DLSYS_EXTERN_C
+#endif
+
+#include <cstdint>
+#include <cstddef>
+
+#include "dlarray.h"
+
+DLSYS_EXTERN_C{
+    typedef int64_t index_t;
+
+    typedef DLArray *DLArrayHandle;
+
+    typedef void *DLStreamHandle;
+
+    int DLArrayAlloc(const index_t *shape, int ndim, DLContext ctx, DLArrayHandle *out);
+
+    int DLArrayFree(DLArrayHandle handle);
+
+    int DLArrayCopyFromTo(DLArrayHandle from, DLArrayHandle to, DLStreamHandle stream);
+
+}
+#endif //DLSYS_C_RUNTIME_API_H
+```
+
+对CPU进行操作
+
+新建```cpu_device_api.h```
+
+```cpp
+//
+// Created by hadxu on 2018/3/9.
+//
+
+#ifndef DLSYS_CPU_DEVICE_API_H
+#define DLSYS_CPU_DEVICE_API_H
+
+
+#include "c_runtime_api.h"
+#include "device_api.h"
+#include <cassert>
+#include <cstring>
+
+
+class CPUDeviceAPI : public DeviceAPI {
+public:
+    void *AllocDataSpace(DLContext ctx, size_t size, size_t algment) final;
+
+    void FreeDataSpace(DLContext ctx, void *ptr) final;
+
+    void CopyDataFromTo(const void *from, void *to, size_t size,
+                        DLContext ctx_from, DLContext ctx_to,
+                        DLStreamHandle stream) final;
+
+    void StreamSync(DLContext ctx, DLStreamHandle stream) final;
+};
+
+#endif //DLSYS_CPU_DEVICE_API_H
+```
+
+> 继承```DeviceAPI```类,并定义里面的方法,```final```表示不会再被继承了，也就是方法只能够被实现。
+
+新建```cpu_device_api.cpp```实现里面的方法
+
+```c++
+//
+// Created by hadxu on 2018/3/9.
+//
+
+#include "cpu_device_api.h"
+
+#include <cstdlib>
+
+#include <iostream>
+
+void *CPUDeviceAPI::AllocDataSpace(DLContext ctx, size_t size, size_t algment) {
+
+    void *ptr;
+    int ret = posix_memalign(&ptr, algment, size);
+    if (ret != 0)
+        throw std::bad_alloc();
+    return ptr;
+}
+
+void CPUDeviceAPI::FreeDataSpace(DLContext ctx, void *ptr) {
+    free(ptr);
+}
+
+void CPUDeviceAPI::CopyDataFromTo(const void *from, void *to, size_t size, DLContext ctx_from, DLContext ctx_to,
+                                  DLStreamHandle stream) {
+    memcpy(to, from, size);
+}
+
+void CPUDeviceAPI::StreamSync(DLContext ctx, DLStreamHandle stream) {
+
+}
+```
+
+> 还是蛮简单的，最后一个方法不需要写，在CPU内部没有同步这个需要。
+
+那么下面需要实现统一的操作设备的方法
+
+```cpp
+//
+// Created by hadxu on 2018/3/9.
+//
+
+#include "c_runtime_api.h"
+#include "cpu_device_api.h"
+#include "runtime_base.h"
+
+#include <array>
+#include <thread>
+
+using namespace std;
+
+class DeviceAPIManager {
+
+public:
+    static const int kMaxDeviceAPI = 8;
+
+    static DeviceAPI *Get(DLContext ctx) {
+        return Global()->GetAPI(ctx.device_type);
+    }
+
+private:
+    std::array<DeviceAPI *, kMaxDeviceAPI> api_;
+
+    DeviceAPIManager() {
+        std::fill(api_.begin(), api_.end(), nullptr);
+        static CPUDeviceAPI cpu_device_api_inst;
+        api_[kCPU] = static_cast<DeviceAPI *>(&cpu_device_api_inst);
+    }
+
+    static DeviceAPIManager *Global() {
+        static DeviceAPIManager inst;
+        return &inst;
+    }
+
+    DeviceAPI *GetAPI(DLDeviceType type) {
+        if (api_[type] == nullptr) {
+            std::cerr << "Device API not supported" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        return api_[type];
+
+    }
+
+};
+inline DLArray *DLArrayCreate_() {
+    auto *arr = new DLArray();
+    arr->shape = nullptr;
+    arr->ndim = 0;
+    arr->data = nullptr;
+    return arr;
+}
+
+inline void DLArrayFree_(DLArray *arr) {
+    if (arr != nullptr) {
+        delete[] arr->shape;
+        if (arr->data != nullptr) {
+            DeviceAPIManager::Get(arr->ctx)->FreeDataSpace(arr->ctx, arr->data);
+        }
+    }
+    delete arr;
+}
+
+inline size_t GetDataSize(DLArray *arr) {
+    size_t size = 1;
+    for (index_t i = 0; i < arr->ndim; i++)
+        size *= arr->shape[i];
+    size *= 4;
+    return size;
+}
+
+inline size_t GetDataAlignment(DLArray *arr) {
+    return 8;
+}
+
+
+int DLArrayAlloc(const index_t *shape, int ndim, DLContext ctx, DLArrayHandle *out) {
+    DLArray *arr = nullptr;
+
+    API_BEGIN() ;
+        arr = DLArrayCreate_();
+
+        arr->ndim = ndim;
+
+        auto *shape_copy = new index_t[ndim];
+        std::copy(shape, shape + ndim, shape_copy);
+        arr->shape = shape_copy;
+
+        arr->ctx = ctx;
+
+        size_t size = GetDataSize(arr);
+        size_t alignment = GetDataAlignment(arr);
+
+        arr->data = DeviceAPIManager::Get(ctx)->AllocDataSpace(ctx, size, alignment);
+
+        *out = arr;
+
+
+    API_END_HANDLE_ERROR(DLArrayFree_(arr));
+}
+
+
+int DLArrayFree(DLArrayHandle handle) {
+    API_BEGIN() ;
+        DLArray *arr = handle;
+        DLArrayFree_(arr);
+    API_END();
+}
+
+int DLArrayCopyFromTo(DLArrayHandle from, DLArrayHandle to, DLStreamHandle stream) {
+    API_BEGIN() ;
+        size_t from_size = GetDataSize(from);
+        size_t to_size = GetDataSize(to);
+
+        assert(from_size == to_size);
+
+        DLContext ctx = from->ctx;
+
+        if (ctx.device_type == kCPU) {
+            ctx = to->ctx;
+        }
+        DeviceAPIManager::Get(ctx)->CopyDataFromTo(from->data, to->data, from_size, from->ctx, to->ctx, stream);
+
+    API_END();
+}
+```
+
+这段代码有点多，我来一个个分析
+
+首先，定义```DeviceAPIManager```类，
+
+```cpp
+class DeviceAPIManager {
+
+public:
+    static const int kMaxDeviceAPI = 8;
+
+    static DeviceAPI *Get(DLContext ctx) {
+        return Global()->GetAPI(ctx.device_type);
+    }
+
+private:
+    std::array<DeviceAPI *, kMaxDeviceAPI> api_;
+
+    DeviceAPIManager() {
+        std::fill(api_.begin(), api_.end(), nullptr);
+        static CPUDeviceAPI cpu_device_api_inst;
+        api_[kCPU] = static_cast<DeviceAPI *>(&cpu_device_api_inst);
+    }
+
+    static DeviceAPIManager *Global() {
+        static DeviceAPIManager inst;
+        return &inst;
+    }
+
+    DeviceAPI *GetAPI(DLDeviceType type) {
+        if (api_[type] == nullptr) {
+            std::cerr << "Device API not supported" << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        return api_[type];
+
+    }
+
+};
+
+
+```
+
+> 该类就是经典的设计模式中的单一类模式，一个类就是一个功能，全是静态方法，至于为什么构造函数为什么放在私有里面，就是防止被实例化，使用该方法就是使用类方法进行操作设备。
+
+```cpp
+inline DLArray *DLArrayCreate_() {
+    auto *arr = new DLArray();
+    arr->shape = nullptr;
+    arr->ndim = 0;
+    arr->data = nullptr;
+    return arr;
+}
+
+inline void DLArrayFree_(DLArray *arr) {
+    if (arr != nullptr) {
+        delete[] arr->shape;
+        if (arr->data != nullptr) {
+            DeviceAPIManager::Get(arr->ctx)->FreeDataSpace(arr->ctx, arr->data);
+        }
+    }
+    delete arr;
+}
+
+inline size_t GetDataSize(DLArray *arr) {
+    size_t size = 1;
+    for (index_t i = 0; i < arr->ndim; i++)
+        size *= arr->shape[i];
+    size *= 4;
+    return size;
+}
+
+inline size_t GetDataAlignment(DLArray *arr) {
+    return 8;
+}
+
+
+int DLArrayAlloc(const index_t *shape, int ndim, DLContext ctx, DLArrayHandle *out) {
+    DLArray *arr = nullptr;
+
+    API_BEGIN() ;
+        arr = DLArrayCreate_();
+
+        arr->ndim = ndim;
+
+        auto *shape_copy = new index_t[ndim];
+        std::copy(shape, shape + ndim, shape_copy);
+        arr->shape = shape_copy;
+
+        arr->ctx = ctx;
+
+        size_t size = GetDataSize(arr);
+        size_t alignment = GetDataAlignment(arr);
+
+        arr->data = DeviceAPIManager::Get(ctx)->AllocDataSpace(ctx, size, alignment);
+
+        *out = arr;
+
+
+    API_END_HANDLE_ERROR(DLArrayFree_(arr));
+}
+
+
+int DLArrayFree(DLArrayHandle handle) {
+    API_BEGIN() ;
+        DLArray *arr = handle;
+        DLArrayFree_(arr);
+    API_END();
+}
+
+int DLArrayCopyFromTo(DLArrayHandle from, DLArrayHandle to, DLStreamHandle stream) {
+    API_BEGIN() ;
+        size_t from_size = GetDataSize(from);
+        size_t to_size = GetDataSize(to);
+
+        assert(from_size == to_size);
+
+        DLContext ctx = from->ctx;
+
+        if (ctx.device_type == kCPU) {
+            ctx = to->ctx;
+        }
+        DeviceAPIManager::Get(ctx)->CopyDataFromTo(from->data, to->data, from_size, from->ctx, to->ctx, stream);
+
+    API_END();
+}
+```
+
+> 这段代码实现了各种对设备的操作，同时看见有```API_BEGIN()```等函数的出现，这就是处理异常。
+
+处理异常的宏定义为```runtime_base.h```
+
+
+```cpp
+/*!
+ *  Copyright (c) 2017 by Contributors
+ * \file runtime_base.h
+ * \brief Base of all C APIs
+ */
+#ifndef DLSYS_RUNTIME_RUNTIME_BASE_H_
+#define DLSYS_RUNTIME_RUNTIME_BASE_H_
+
+#include "c_runtime_api.h"
+#include <stdexcept>
+#include <iostream>
+
+/*! \brief  macro to guard beginning and end section of all functions */
+#define API_BEGIN() try {
+/*!
+ * \brief every function starts with API_BEGIN(), and finishes with API_END()
+ *  or API_END_HANDLE_ERROR
+ */
+#define API_END()                                                              \
+}                                                                            \
+catch (std::runtime_error & _except_) {                                      \
+return DLSYSAPIHandleException(_except_);                                  \
+}                                                                            \
+return 0;
+
+/*!
+ * \brief every function starts with API_BEGIN() and finishes with API_END() or
+ * API_END_HANDLE_ERROR. The finally clause contains procedure to cleanup states
+ * when an error happens.
+ */
+#define API_END_HANDLE_ERROR(Finalize)                                         \
+}                                                                            \
+catch (std::runtime_error & _except_) {  \
+Finalize;                                                                  \
+return DLSYSAPIHandleException(_except_);                                  \
+}                                                                            \
+return 0;
+
+/*!
+ * \brief handle exception throwed out
+ * \param e the exception
+ * \return the return value of API after exception is handled
+ */
+inline int DLSYSAPIHandleException(const std::runtime_error &e) {
+    // TODO
+    // TVMAPISetLastError(e.what());
+    return -1;
+}
+
+#endif // DLSYS_RUNTIME_RUNTIME_BASE_H_
+```
+
+到目前为止，我们的文件应该是这样的
+
+```
+src
+    dlarray.h
+    c_runtime_api.h
+    c_runtime_api.cpp
+    cpu_device_api.cpp
+    cpu_device_api.h
+    runtime_base.h
+    device_api.h
+```
+
+我们先测试一下:
+
+```cpp
+#include <cstdio>
+#include <iostream>
+#include "src/c_runtime_api.h"
+#include "src/dlarray.h"
+
+using namespace std;
+
+int main() {
+
+    DLContext ctx;
+    ctx.device_id = 0;
+    ctx.device_type =kCPU;
+
+    int ndim = 2;
+
+    int64_t shape[]={4,2};
+
+    auto *out = new DLArrayHandle();
+
+    DLArrayAlloc(shape,ndim,ctx, out);
+
+    cout<<(*out)->shape[0]<<" "<<(*out)->shape[1]<<endl;
+    
+    return 0;
+}
+```
+
+输出
+
+```
+4 2
+```
+
+表示我们的对CPU的实现是成功的。
+
+下一篇文章讲解GPU实现。

@@ -1,0 +1,44 @@
+---
+layout:     post
+title:      "支付宝支付"
+subtitle:   "支付宝"
+date:       2017-04-21
+author:     "hadxu"
+header-img: "img/hadxu.jpg"
+tags:
+    - 支付宝
+---
+
+# 坑爹的支付宝接口开发
+
+----------
+### 最近在无锡的某一家科技公司实习，做了一个坑爹的支付功能，不得不说，支付还是蛮复杂的，坑了2天终于搞定了，今天先来讲解一下支付宝支付，下节课写微信坑。
+
+----------
+#### 1. 首先你要有一个五证齐全的公司，然后到支付宝上申请开发者。当我们申请完开发者，就会需要申请应用开发，当应用开发完，就有一个APPID，这是对应的应用APPID，我们程序中使用的就是这个对应应用的APPID，一个应用一个，这个很重要，切记切记！。
+#### 2. 其次添加应用的加密方式。自从2017年以来，支付宝使用了RSA2加密方式，就是比RSA更安全一点。首先打开openssl，如果没有安装，支付宝上有。我们采用pem文件的方式来读取公钥私钥。
+
+	openssl>genrsa -out app_private_key.pem 2018 #私钥
+	openssl>pkcs8 -topk8 -inform PEM -in app_private_key.pem -outform PEM -nocrypt -out app_private_key_pkcs8.pem #java开发者需要pkcs8的格式密钥
+	openssl>rsa -in app_private_key.pem -pubout -out app_public_key.pem #公钥
+####当我们将这段公钥上传给支付宝，我们可以验证一下是否正确，一般都是正确的。这时候我们有三个pem文件，其中pkcs8的格式java需要，非java的不需要。也就是我们有两个pem文件，第一个是私钥，自己保留的，第二个是公钥，也就是我们刚才上传上去的公钥。这时候网页会有支付宝公钥。我们也要保存下来。
+
+#### 3. 我们看一下3个文件。一个应用公钥配一个应用私钥。还有一个支付宝公钥。
+
+##### - 应用私钥：我们自己保留的，在程序中我们需要用它来进行签名，然后将签名过的字符串传给支付宝，开始支付。
+##### - 应用公钥我们不用，给支付宝用。
+##### - 支付宝公钥，我们将支付宝的返回给我的信息进行解密，就是用支付宝公钥解密，得到结果。
+
+#### 4. 在官方中，没有Python版的，马丹，Python语言竟然没有示例，于是我也懒得写，用了github的一个支付宝库，`pip install python-alipay-sdk`，就可以集成了。
+
+我的示例：
+
+    alipay = AliPay(appid=Config.ALIPAY_PARTNER_ID, app_private_key_path=Config.ALIPAY_PRIVATE_KEY,
+    app_alipay_public_key_path=Config.ALIPAY_PUBLIC_KEY, sign_type='RSA2',
+    app_notify_url=Config.ALIPAY_NOTIFY_URL)
+    
+    order_string = alipay.create_app_trade(out_trade_no="201611121111", total_amount="0.01", subject="testing order")
+
+这边生成的orderstring就是传给手机的，当手机拿到这个orderstring就会请求支付宝，如果手机装有支付宝，就会唤起支付宝客户端，进行支付，如果能够支付，说明支付成功，同时支付宝会向服务器发送一个表单请求，确认是否成功，并返回`success`。至此，整个支付宝流程成功。
+
+##非常重要的一件事，就是你测试的APPID对应的应用一定要上线，同时要进行app支付签约，才能够进行支付成功。我当时就困在这个上面。由于我用的人家的库，等项目结束，我要自己重新写这个库，对于你的Python编程是一个非常大的提高。

@@ -1,0 +1,103 @@
+---
+layout:     post
+title:      "MLP的推导思考"
+subtitle:   "2017"
+date:       2017-12-29
+author:     "hadxu"
+header-img: "img/hadxu.jpg"
+tags:
+    - Python
+---
+
+# MLP的推导思考
+> 今天，是神经网络的最后一节课，老师让我们推导一个特别简单的神经网络，只需要进行一次计算即可。谁知道，我在第一次提交的时候卡住了，多多少少接触神经网络已经1年了，却连最基本的神经网络的推导还不是特别熟练，可悲。一直会使用框架，各种Pytorch啦，Tensorflow啦，Keras啦，却底层推导不熟练，可见基本功的缺失。回去将神经网络又推导了一遍。
+
+### 神经网络的结构
+![img](/img/mlp.jpg)
+目标是求解w以及V。
+
+1. 建立前向传播算法。
+
+```
+z1 = np.dot(w1,x)
+a1 = sigmoid(z1)
+z2 = np.dot(w2,a1)
+a2 = z2
+```
+当a2计算出来以后，就是该神经网络的输出值。计算误差
+```
+loss = np.square(a2 - y).sum()*0.25
+```
+
+而该误差使用MSE损失函数，则残差为
+```
+dz2 = a2 - y
+```
+而当前的dw为前面传过来的残差乘以当前层的输入值。
+```
+dw2 = np.dot(dz2,a1.T)
+```
+同时，将传过来的残差dz2乘以当前的W2再乘以当前层输入的导数作为下一层的残差。
+```
+dz1 = np.dot(w2.T,dz2) * dev_sigmoid(z1)
+```
+下一层的dw1为
+```
+dw1 = np.dot(dz1,x.T)
+```
+
+对于该问题，整体的代码如下：
+```
+# -*- coding: utf-8 -*-
+import numpy as np
+
+# N is batch size; D_in is input dimension;
+# H is hidden dimension; D_out is output dimension.
+N, D_in, H, D_out = 1, 2, 2, 2
+
+# Create random input and output data
+x = np.array([[1],[2]])
+y = np.array([[-1],[-2]])
+
+# Randomly initialize weights
+w1 = np.zeros((D_in,H))
+w2 = np.ones((H,D_out))
+
+def sigmoid(x):
+    return 1./(1+np.exp(-x))
+
+def dev_sigmoid(x):
+    return sigmoid(x)*(1-sigmoid(x))
+
+learning_rate = 0.5
+for t in range(100000):
+    z1 = np.dot(w1,x)
+    a1 = sigmoid(z1)
+    z2 = np.dot(w2,a1)
+    a2 = z2
+
+    loss = a2 - y
+
+    # print(np.square(loss).sum())
+
+    dz2 = a2 - y
+    dw2 = np.dot(dz2,a1.T)
+    dz1 = np.dot(w2.T,dz2) * dev_sigmoid(z1)
+    dw1 = np.dot(dz1,x.T)
+
+
+    # Update weights
+    w1 -= learning_rate * dw1
+    w2 -= learning_rate * dw2
+
+
+z1  = np.dot(w1,x)
+a1 = sigmoid(z1)
+z2 = np.dot(w2,a1)
+a2 = z2
+
+print(a2)
+```
+
+> 总结：对于基本功问题，还是要打基础，不能有了工具而忘了底层怎么实现。
+

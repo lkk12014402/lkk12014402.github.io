@@ -1,0 +1,339 @@
+---
+layout:     post
+title:      "分布式网络爬虫"
+subtitle:   "爬虫 知乎"
+date:       2017-06-09
+author:     "hadxu"
+header-img: "img/hadxu.jpg"
+tags:
+    - 爬虫
+---
+
+
+# 分布式爬虫搭建
+
+### 更新
+
+设置代理服务器，开始我想将自己的电脑搞成代理服务器的，但看网上的回答如果不是公网ip，不能设置代理的，于是我用腾讯云服务器作为代理服务器，设置如下：
+
+	sudo apt-get install -y tinyproxy
+	sudo vim /etc/tinyproxy.conf
+
+修改 `Allow 127.0.0.1`为
+
+    # Allow 127.0.0.1 表示让所有的ip都可以进行代理。
+
+接下来使用 
+	sudo service tinyproxy restart
+
+测试代理服务器能否用：
+
+	curl -x 182.254.156.224:8888 httpbin.org/get
+
+如果没有错误，说明可以使用。
+
+这样就可以将你的爬虫代理服务器设置为这个啦，快乐爬虫吧！
+
+
+
+
+## 本文详细介绍了分布式爬虫的搭建
+
+- 首先介绍了scrapy的搭建过程
+- 介绍了scrapy中间件的作用，以及更改中间件（请求头和代理ip的修改）
+- 介绍了分布式架构的流程，以及使用scrapy-redis搭建分布式爬虫
+- 使用实例-爬虫知乎
+
+## scrapy的搭建过程
+
+- 首先安装scrapy
+> 在这里我就简单介绍一下scrapy的在windows下的安装过程。使用Anaconda安装Python3环境，使用的版本为Anaconda4.2.0。安装之后使用以下命令进行新环境的安装。
+> 
+- conda create -n Crawl python=3.5
+- conda install anaconda
+- pip install pymongo # 连接mongodb数据库
+
+- 其次安装mongodb以及redis菲关系型数据库。
+> 这两个数据库都是非关系型数据库，其中mongodb是文档型非关系型数据库，redis是内存型数据库。而在这个爬虫项目中，mongodb作为爬到的用户的信息的数据库，redis作为分布式爬虫数据库，前期不需要用到，在搭建分布式爬虫时详细讲解。
+
+- 安装mongodb以及redis
+> 在windows中，安装各种开源软件是非常痛苦的一件事情，因为需要各种各样的编译器，好在有朋友将其编译成windows，供下载使用。其中mongodb官网有其下载windows版本，redis安装地址为[redis](https://github.com/MSOpenTech/redis/releases)。说明即可使用。
+
+
+----------
+## scrapy搭建知乎爬虫
+
+首先，使用cmd进入python环境：
+
+> activate Crawl
+
+
+    scrapy startproject zhihuuser
+	cd zhihuuser
+	scrapy genspider zhihu www.zhihu.com
+
+于是我们的项目是这样的：(不包括helper.py 这是后来写的)
+
+![img](/img/in-post/分布式网络爬虫-1.PNG)
+
+我们使用了pycharm来进行爬虫，但是如何运行这个爬虫呢，这需要一些配置。
+
+首先新建一个py文件，如上图所示`run.py`,添加如下内容：
+
+	from scrapy import cmdline
+	
+	cmdline.execute('scrapy crawl  zhihu'.split())
+
+，其次打开配置
+
+![img](/img/in-post/分布式网络爬虫-2.PNG)
+
+最主要的是找到run.py文件，接下来就可以点击运行，刚开始，该爬虫时不可以用的，我们需要进行配置。打开setting，进行请求头的配置，我们要让我们的爬虫看起来像浏览器一样，
+
+	DEFAULT_REQUEST_HEADERS = {
+	    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36',
+	    'authorization': 'oauth c3cef7c66a1843f8b3a9e6a1e3160e20'
+	}
+
+接下来就开始编码了。
+
+根据我的探索，知乎提供了API供我们使用，其中查看用户的基本信息的字符串为：
+
+    user_url = 'https://www.zhihu.com/api/v4/members/{user}?include={include}'
+
+用户关注的人的url：
+
+    follows_url = 'https://www.zhihu.com/api/v4/members/{user}/followees?include={include}&amp;offset={offset}&amp;limit={limit}'
+
+用户的粉丝url：
+
+    followers_url = 'https://www.zhihu.com/api/v4/members/{user}/followers?include={include}&offset={offset}&limit={limit}'
+
+这样，其中user为知乎用户的url_token,也就是知乎用户的唯一id，include为查询参数:各个查询参数为：
+
+    user_query = 'locations,employments,gender,educations,business,voteup_count,thanked_Count,follower_count,following_count,cover_url,following_topic_count,following_question_count,following_favlists_count,following_columns_count,answer_count,articles_count,pins_count,question_count,commercial_question_count,favorite_count,favorited_count,logs_count,marked_answers_count,marked_answers_text,message_thread_token,account_status,is_active,is_force_renamed,is_bind_sina,sina_weibo_url,sina_weibo_name,show_sina_weibo,is_blocking,is_blocked,is_following,is_followed,mutual_followees_count,vote_to_count,vote_from_count,thank_to_count,thank_from_count,thanked_count,description,hosted_live_count,participated_live_count,allow_message,industry_category,org_name,org_homepage,badge[?(type=best_answerer)].topics'
+    follows_query = 'data[*].answer_count,articles_count,gender,follower_count,is_followed,is_following,badge[?(type=best_answerer)].topics'
+    followers_query = 'data[*].answer_count,articles_count,gender,follower_count,is_followed,is_following,badge[?(type=best_answerer)].topics'
+
+这样就开始我们的编码：
+
+	class ZhihuSpider(scrapy.Spider):
+	    name = "zhihu"
+	    allowed_domains = ["www.zhihu.com"]
+	    start_urls = ['http://www.zhihu.com/']
+	    user_url = 'https://www.zhihu.com/api/v4/members/{user}?include={include}'
+	    follows_url = 'https://www.zhihu.com/api/v4/members/{user}/followees?include={include}&amp;offset={offset}&amp;limit={limit}'
+	    followers_url = 'https://www.zhihu.com/api/v4/members/{user}/followers?include={include}&offset={offset}&limit={limit}'
+	    start_user = 'excited-vczh'
+	    user_query = 'locations,employments,gender,educations,business,voteup_count,thanked_Count,follower_count,following_count,cover_url,following_topic_count,following_question_count,following_favlists_count,following_columns_count,answer_count,articles_count,pins_count,question_count,commercial_question_count,favorite_count,favorited_count,logs_count,marked_answers_count,marked_answers_text,message_thread_token,account_status,is_active,is_force_renamed,is_bind_sina,sina_weibo_url,sina_weibo_name,show_sina_weibo,is_blocking,is_blocked,is_following,is_followed,mutual_followees_count,vote_to_count,vote_from_count,thank_to_count,thank_from_count,thanked_count,description,hosted_live_count,participated_live_count,allow_message,industry_category,org_name,org_homepage,badge[?(type=best_answerer)].topics'
+	    follows_query = 'data[*].answer_count,articles_count,gender,follower_count,is_followed,is_following,badge[?(type=best_answerer)].topics'
+	    followers_query = 'data[*].answer_count,articles_count,gender,follower_count,is_followed,is_following,badge[?(type=best_answerer)].topics'
+	
+	    def start_requests(self):
+	        yield Request(self.user_url.format(user=self.start_user, include=self.user_query), self.parse_user)
+	        yield Request(self.follows_url.format(user=self.start_user, include=self.follows_query, limit=20, offset=0),
+	                      self.parse_follows)
+	        yield Request(
+	                self.followers_url.format(user=self.start_user, include=self.followers_query, limit=20, offset=0),
+	                self.parse_followers)
+
+1. 首先，我们从轮子哥开始爬起，因为大V嘛，其次，通过构建`Request`来进行爬取，
+	
+	yield Request(self.user_url.format(user=self.start_user, include=self.user_query), self.parse_user)
+
+将会调用parse_user函数，对该请求到的内容进行分析，提取。
+
+    def parse_user(self, response):
+        if response.status == 200:
+            result = json.loads(response.text)
+            item = UserItem()
+            item['url_token'] = result.get('url_token')
+            item['name'] = result.get('name')
+            # location
+            try:
+                item['location'] = result.get('locations')[0].get('name')
+            except:
+                item['location'] = ''
+
+            item['gender'] = result.get('gender')
+
+            item['avatar_url'] = result.get('avatar_url').replace('is', 'xl')
+
+            # business
+            try:
+                item['business'] = result.get('business').get('name')
+            except:
+                item['business'] = ''
+
+            # company and job
+            try:
+                item['company'] = result.get('employments')[0].get('company').get('name')
+                item['job'] = result.get('employments')[0].get('job').get('name')
+            except:
+                item['company'] = ''
+                item['job'] = ''
+
+            item['headline'] = result.get('headline', '')
+
+            # school
+            try:
+                item['school'] = result.get('educations')[0].get('school').get('name')
+            except:
+                item['school'] = ''
+
+            item['voteup_count'] = result.get('voteup_count')
+            item['follower_count'] = result.get('follower_count')
+
+            yield item
+
+当请求到的状态码为200的时候，说明已经成功，于是将里面的内容提取出来，需要注意的是，内容可能为空，需要我们进行try异常分析。
+
+对用户关注的人进行分析：
+
+	yield Request(self.follows_url.format(user=self.start_user, include=self.follows_query, limit=20, offset=0),
+	                      self.parse_follows)
+
+这段代码会对用户关注的人，请求调用parse_follows函数：
+
+    def parse_follows(self, response):
+        results = json.loads(response.text)
+        if 'data' in results.keys():
+            for result in results.get('data'):
+                yield Request(self.user_url.format(user=result.get('url_token'), include=self.user_query),
+                              self.parse_user)
+
+        if 'paging' in results.keys() and results.get('paging').get('is_end') == False:
+            next_page = results.get('paging').get('next')
+            yield Request(next_page, self.parse_follows)
+
+同理，对用户的粉丝也一样：
+
+    def parse_followers(self, response):
+        results = json.loads(response.text)
+        if 'data' in results.keys():
+            for result in results.get('data'):
+                yield Request(self.user_url.format(user=result.get('url_token'), include=self.user_query),
+                              self.parse_user)
+        if 'paging' in results.keys() and results.get('paging').get('is_end') == False:
+            next_page = results.get('paging').get('next')
+            yield Request(next_page, self.parse_followers)
+
+到这里，我们已经配置好了爬虫的基本任务，下面编写pipeline来进行数据的存储。
+
+	class MongoPipeline(object):
+	    collection_name = 'users'
+	
+	    def __init__(self, mongo_uri, mongo_db):
+	        self.mongo_uri = mongo_uri
+	        self.mongo_db = mongo_db
+	
+	    @classmethod
+	    def from_crawler(cls, crawler):
+	        return cls(
+	                mongo_uri=crawler.settings.get('MONGO_URI'),
+	                mongo_db=crawler.settings.get('MONGO_DATABASE')
+	        )
+	
+	    def open_spider(self, spider):
+	        self.client = pymongo.MongoClient(self.mongo_uri)
+	        self.db = self.client[self.mongo_db]
+	
+	    def close(self, spider):
+	        self.client.close()
+	
+	    def process_item(self, item, spider):
+	        print('已爬取%s个用户' % self.db[self.collection_name].find().count())
+	        self.db[self.collection_name].update({'url_token': item['url_token']}, dict(item), True)
+	        return item
+
+到这里，爬虫就可以使用了。
+
+## 进阶
+
+在上面的爬虫中，面临的最大的问题就是，ip容易被封。为了解决这个问题，Scrapy提出了几种方案，其中可行的就是：
+
+1. 设置爬虫时间 `DOWNLOAD_DELAY = 1`
+2. 设置代理头 每次请求使用的不同的代理头
+3. 设置代理ip 每次请求使用不同的代理ip
+
+让我们就来设置吧。
+第一步就算了，设置下载时间，每秒请求一个，什么时候请求的完啊，第一个方案放弃。第二个，我们这样设置：
+
+	class RotateUserAgentMiddleware(object):
+	    def __init__(self, user_agent=''):
+	        self.user_agent = user_agent
+	
+	    def process_request(self, request, spider):
+	        ua = random.choice(self.USER_AGENTS)
+	        if ua:
+	            # print('*****current User_agent:%s*******' % ua)
+	            request.headers.setdefault('User-Agent', ua)
+	
+	    USER_AGENTS = [
+	        "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.0; Acoo Browser; SLCC1; .NET CLR 2.0.50727; Media Center PC 5.0; .NET CLR 3.0.04506)",
+	        "Mozilla/4.0 (compatible; MSIE 7.0; AOL 9.5; AOLBuild 4337.35; Windows NT 5.1; .NET CLR 1.1.4322; .NET CLR 2.0.50727)",
+	        "Mozilla/5.0 (Windows; U; MSIE 9.0; Windows NT 9.0; en-US)",
+	        "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Win64; x64; Trident/5.0; .NET CLR 3.5.30729; .NET CLR 3.0.30729; .NET CLR 2.0.50727; Media Center PC 6.0)",
+	        "Mozilla/5.0 (compatible; MSIE 8.0; Windows NT 6.0; Trident/4.0; WOW64; Trident/4.0; SLCC2; .NET CLR 2.0.50727; .NET CLR 3.5.30729; .NET CLR 3.0.30729; .NET CLR 1.0.3705; .NET CLR 1.1.4322)",
+	        "Mozilla/4.0 (compatible; MSIE 7.0b; Windows NT 5.2; .NET CLR 1.1.4322; .NET CLR 2.0.50727; InfoPath.2; .NET CLR 3.0.04506.30)",
+	        "Mozilla/5.0 (Windows; U; Windows NT 5.1; zh-CN) AppleWebKit/523.15 (KHTML, like Gecko, Safari/419.3) Arora/0.3 (Change: 287 c9dfb30)",
+	        "Mozilla/5.0 (X11; U; Linux; en-US) AppleWebKit/527+ (KHTML, like Gecko, Safari/419.3) Arora/0.6",
+	        "Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.8.1.2pre) Gecko/20070215 K-Ninja/2.1.1",
+	        "Mozilla/5.0 (Windows; U; Windows NT 5.1; zh-CN; rv:1.9) Gecko/20080705 Firefox/3.0 Kapiko/3.0",
+	        "Mozilla/5.0 (X11; Linux i686; U;) Gecko/20070322 Kazehakase/0.4.5",
+	        "Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.0.8) Gecko Fedora/1.9.0.8-1.fc10 Kazehakase/0.5.6",
+	        "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/535.11 (KHTML, like Gecko) Chrome/17.0.963.56 Safari/535.11",
+	        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_3) AppleWebKit/535.20 (KHTML, like Gecko) Chrome/19.0.1036.7 Safari/535.20",
+	        "Opera/9.80 (Macintosh; Intel Mac OS X 10.6.8; U; fr) Presto/2.9.168 Version/11.52",
+	    ]
+
+当每次进行请求的时候，就随机使用一个代理头。
+
+第三个，我们使用代理ip。
+
+	class ProxyMiddleware:
+	    def process_request(self, request, spider):
+	        ip = random.choice(self.ip_pools)
+	        print('正在使用%s' % ip)
+	        try:
+	            request.meta["proxy"] = "http://" + ip['ip']
+	        except Exception:
+	            pass
+	
+	    ip_pools = [{'ip': '1.195.204.200:8118'}, {'ip': '115.220.6.248:808'},
+	                {'ip': '175.155.242.148:808'}, {'ip': '101.224.30.86:9000'}]
+
+记住，需要修改setting中的内容。
+
+	DOWNLOADER_MIDDLEWARES = {
+	    # 'zhihuuser.middlewares.MyCustomDownloaderMiddleware': 543,
+	    'zhihuuser.middlewares.RotateUserAgentMiddleware': 400,
+	    'zhihuuser.middlewares.ProxyMiddleware': 401,
+	}
+
+到这里，我们的爬虫就已经很厉害了，但是还是每秒请求一次，那要请求到什么时候啊，对不对！
+
+## 大神
+
+### 搭建分布式爬虫
+
+在这里，我们采用了redis非关系型数据库来进行分布式爬虫。为什么redis可以呢？原因在于scrapy本身使用了自己的队列，每次只能取一个，当redis取代了本身的队列的时候，多个机器可以同时进行读取队列里面的内容，于是这样就达到了分布式的目的。
+
+首先安装：
+
+	pip install scrapy-redis 
+
+接下来修改里面的配置，修改setting，添加如下内容
+
+	# 分布式方案
+	
+	SCHEDULER = "scrapy_redis.scheduler.Scheduler"
+	
+	
+	DUPEFILTER_CLASS = "scrapy_redis.dupefilter.RFPDupeFilter"
+
+这样就达到了分布式的目的，是不是很简单呢？一起来吧，github为：[zhihuuser](https://github.com/HadXu/spider-python/tree/master/zhihuuser)
+
+参考了：
+
+[崔庆才的博客](http://cuiqingcai.com/4380.html)

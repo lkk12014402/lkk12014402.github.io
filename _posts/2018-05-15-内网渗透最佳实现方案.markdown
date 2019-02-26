@@ -1,0 +1,115 @@
+---
+layout:     post
+title:      "内网渗透最佳实现方案"
+subtitle:   "网络"
+date:       2018-05-15
+author:     "hadxu"
+header-img: "img/hadxu.jpg"
+tags:
+    - 网络
+    - 服务器
+---
+
+# 内网渗透最佳实现方案
+
+### 在进行开发的过程中，经常有这样的需求
+
+> 我的服务器在内网，而我的电脑在家庭里面的网络，当然我的电脑和服务器肯定属于不同的网段，那如果我想要访问服务器呢？而且这种需求是非常强烈的？
+
+### 用内网渗透
+
+这里我们使用```frp```
+
+##### frp 的作用
+
+* 利用处于内网或防火墙后的机器，对外网环境提供 http 或 https 服务。
+* 对于 http, https 服务支持基于域名的虚拟主机，支持自定义域名绑定，使多个域名可以共用一个80端口。
+* 利用处于内网或防火墙后的机器，对外网环境提供 tcp 和 udp 服务，例如在家里通过 ssh 访问处于公司内网环境内的主机。
+
+### 使用方式
+
+> 准备工作:需要一台公网ip地址的服务器以及域名（web访问需要）
+
+
+1. 下载文件 [frp](https://github.com/fatedier/frp)
+
+2. 将 frps 及 frps.ini 放到具有公网 IP 的机器上, 将 frpc 及 frpc.ini 放到处于内网环境的机器上。
+
+3. 修改 frps.ini 文件，这里使用了最简化的配置：
+
+```bash
+# frps.ini
+[common]
+bind_port = 7000
+```
+
+4. 启动 frps：
+
+```
+./frps -c ./frps.ini
+```
+
+5. 修改 frpc.ini 文件，假设 frps 所在服务器的公网 IP 为 x.x.x.x
+
+```bash
+# frpc.ini
+[common]
+server_addr = x.x.x.x
+server_port = 7000
+
+[ssh]
+type = tcp
+local_ip = 127.0.0.1
+local_port = 22
+remote_port = 6000
+```
+
+6. 启动
+
+```bash
+./frpc -c ./frpc.ini
+```
+
+7. ssh访问
+
+```
+ssh -oPort=6000 user@x.x.x.x
+```
+
+### 如果需要web访问，比如我们经常需要用到```notebook```
+
+1. 修改 frps.ini 文件，设置 http 访问端口为 8888：
+
+```bash
+# frps.ini
+[common]
+bind_port = 7000
+vhost_http_port = 8888
+```
+
+2. frpc.ini文件 
+
+
+```bash
+# frpc.ini
+[common]
+server_addr = x.x.x.x
+server_port = 7000
+
+[web]
+type = http
+local_port = 8888 (web服务的端口)
+custom_domains = 你的机器域名
+```
+
+
+3. 启动
+
+```bash
+./frps -c ./frps.ini
+./frpc -c ./frpc.ini
+```
+
+4. 访问 直接通过```域名+ip即可```
+
+

@@ -1,0 +1,330 @@
+---
+layout:     post
+title:      "从零实现深度学习框架(第三天)"
+subtitle:   "CUDA C++ Python"
+date:       2018-03-14
+author:     "hadxu"
+header-img: "img/in-post/Thunder/thunder.jpg"
+tags:
+    - Python
+    - cse599
+---
+
+##### 到目前为止，已经实现了GPU与CPU无缝切换的数据结构，但是我们需要在Python语言中使用，今天我们来实现Python调用。
+
+
+***
+
+# 第三天 实现Python调用动态链接库
+
+> 今天的目标是实现Python来调用已经编译好的动态链接库来进行GPU与CPU的无缝切换。
+
+首先，将编译好的```libc_runtime_api.so```读取进来
+
+
+新建```_base.py```文件
+
+```python
+import os
+import ctypes
+
+def _load_lib():
+    curr_path = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
+    lib_path = os.path.join(curr_path, '../../build/lib/')
+    path_to_so_file = os.path.join(lib_path, "libc_runtime_api.so")
+    lib = ctypes.CDLL(path_to_so_file, ctypes.RTLD_GLOBAL)
+    return lib
+
+_LIB = _load_lib()
+
+# 用来检测调用是否成功
+def check_call(ret):
+    assert(ret == 0)
+
+# 将tuple 或 list 转换成 c 数组形式
+def c_array(ctype, values):
+    return (ctype * len(values))(*values)
+```
+
+同时，新建```ndarray.py```文件，将C语言的数据结构映射到```Python```数据结构来。
+
+首先是数据结构的上下文的处理
+
+```python
+__author__ = 'haxu'
+
+import numpy as np
+import ctypes
+from _base import _LIB, c_array, check_call
+
+
+class DLContext(ctypes.Structure):
+    _fields_ = [('device_id', ctypes.c_int),
+                ('device_type', ctypes.c_int)]
+
+    MASK2STR = {
+        1: 'cpu',
+        2: 'gpu',
+    }
+
+    def __int__(self, device_id, device_type):
+        super(DLContext, self).__init__()
+        self.device_id = device_id
+        self.device_type = device_type
+
+    def __repr__(self):
+        return '%s(%d)' % (DLContext.MASK2STR[self.device_type], self.device_id)
+```
+
+接下来是无缝切换的数据结构
+
+```python
+class DLArray(ctypes.Structure):
+    _fields_ = [('data', ctypes.c_void_p),
+                ('ctx', DLContext),
+                ('ndim', ctypes.c_int),
+                ('shape', ctypes.POINTER(ctypes.c_int64))]
+
+DLArrayHadnle = ctypes.POINTER(DLArray)
+```
+
+
+定义各个方法
+
+```python
+def cpu(dev_id=0):
+    return DLContext(dev_id, 1)
+
+
+def gpu(dev_id=0):
+    return DLContext(dev_id, 2)
+
+
+def is_gpu_ctx(ctx):
+    return ctx and ctx.device_type == 2
+```
+
+实现NDArray,是运行时数据结构
+
+```python
+class NDArray(object):
+    __slots__ = ["handle"]
+
+    def __init__(self, handle):
+        self.handle = handle
+
+    def __del__(self):
+        check_call(_LIB.DLArrayFree(self.handle))
+
+    @property
+    def shape(self):
+        return tuple(self.handle.contents.shape[i]
+                     for i in range(self.handle.contents.ndim))
+
+    @property
+    def ctx(self):
+        return self.handle.contents.ctx
+
+    def __setitem__(self, in_slice, value):
+        if (not isinstance(in_slice, slice) or
+                in_slice.start is not None
+                or in_slice.stop is not None):
+            raise ValueError('Array only support set from numpy array')
+        if isinstance(value, NDArray):
+            if value.handle is not self.handle:
+                value.copyto(self)
+        elif isinstance(value, (np.ndarray, np.generic)):
+            self._sync_copyfrom(value)
+        else:
+            raise TypeError('type %s not supported' % str(type(value)))
+
+    def _sync_copyfrom(self, source_array):
+        if not isinstance(source_array, np.ndarray):
+            try:
+                source_array = np.array(source_array, dtype=np.float32)
+            except:
+                raise TypeError('array must be an array_like data,' +
+                                'type %s is not supported'
+                                % str(type(source_array)))
+        source_array = np.ascontiguousarray(source_array, dtype=np.float32)
+        if source_array.shape != self.shape:
+            raise ValueError('array shape do not match the shape of NDArray')
+        source_arr, shape = NDArray._numpyasarray(source_array)
+        check_call(_LIB.DLArrayCopyFromTo(
+            ctypes.byref(source_arr), self.handle, None))
+        _ = shape
+
+    @staticmethod
+    def _numpyasarray(np_data):
+        data = np_data
+        assert data.flags['C_CONTIGUOUS']
+        arr = DLArray()
+        shape = c_array(ctypes.c_int64, data.shape)
+        arr.data = data.ctypes.data_as(ctypes.c_void_p)
+        arr.shape = shape
+        arr.ndim = data.ndim
+        # CPU device
+        arr.ctx = cpu(0)
+        return arr, shape
+
+    def asnumpy(self):
+        np_arr = np.empty(self.shape, dtype=np.float32)
+        arr, shape = NDArray._numpyasarray(np_arr)
+        check_call(_LIB.DLArrayCopyFromTo(
+            self.handle, ctypes.byref(arr), None))
+        _ = shape
+        return np_arr
+
+    def copyto(self, target):
+        if isinstance(target, DLContext):
+            target = empty(self.shape, target)
+        if isinstance(target, NDArray):
+            check_call(_LIB.DLArrayCopyFromTo(
+                self.handle, target.handle, None))
+        else:
+            raise ValueError("Unsupported target type %s" % str(type(target)))
+        return target
+
+def array(arr, ctx=cpu(0)):
+    if not isinstance(arr, np.ndarray):
+        arr = np.array(arr)
+    ret = empty(arr.shape, ctx)
+    ret._sync_copyfrom(arr)
+    return ret
+
+
+def empty(shape, ctx=cpu(0)):
+    shape = c_array(ctypes.c_int64, shape)
+    ndim = ctypes.c_int(len(shape))
+    handle = DLArrayHandle()
+    check_call(_LIB.DLArrayAlloc(
+        shape, ndim, ctx, ctypes.byref(handle)))
+    return NDArray(handle)
+```
+
+当将数据结构完成，同时需要实现gpu中定义的方法
+
+```python
+import ctypes
+from _base import _LIB
+import ndarray as _nd
+
+
+def array_set(arr, value):
+    assert isinstance(arr, _nd.NDArray)
+    _LIB.DLGpuArraySet(arr.handle, ctypes.c_float(value))
+
+
+def broadcast_to(in_arr, out_arr):
+    assert isinstance(in_arr, _nd.NDArray)
+    assert isinstance(out_arr, _nd.NDArray)
+    _LIB.DLGpuBroadcastTo(in_arr.handle, out_arr.handle)
+
+
+def reduce_sum_axis_zero(in_arr, out_arr):
+    assert isinstance(in_arr, _nd.NDArray)
+    assert isinstance(out_arr, _nd.NDArray)
+    _LIB.DLGpuReduceSumAxisZero(in_arr.handle, out_arr.handle)
+
+
+def matrix_elementwise_add(matA, matB, matC):
+    assert isinstance(matA, _nd.NDArray)
+    assert isinstance(matB, _nd.NDArray)
+    assert isinstance(matC, _nd.NDArray)
+    _LIB.DLGpuMatrixElementwiseAdd(matA.handle, matB.handle, matC.handle)
+
+
+def matrix_elementwise_add_by_const(in_mat, val, out_mat):
+    assert isinstance(in_mat, _nd.NDArray)
+    assert isinstance(out_mat, _nd.NDArray)
+    _LIB.DLGpuMatrixElementwiseAddByConst(
+        in_mat.handle, ctypes.c_float(val), out_mat.handle)
+
+
+def matrix_elementwise_multiply(matA, matB, matC):
+    assert isinstance(matA, _nd.NDArray)
+    assert isinstance(matB, _nd.NDArray)
+    assert isinstance(matC, _nd.NDArray)
+    _LIB.DLGpuMatrixElementwiseMultiply(
+        matA.handle, matB.handle, matC.handle)
+
+
+def matrix_elementwise_multiply_by_const(in_mat, val, out_mat):
+    assert isinstance(in_mat, _nd.NDArray)
+    assert isinstance(out_mat, _nd.NDArray)
+    _LIB.DLGpuMatrixMultiplyByConst(
+        in_mat.handle, ctypes.c_float(val), out_mat.handle)
+
+
+def matrix_multiply(matA, transA, matB, transB, matC):
+    assert isinstance(matA, _nd.NDArray)
+    assert isinstance(matB, _nd.NDArray)
+    assert isinstance(matC, _nd.NDArray)
+    _LIB.DLGpuMatrixMultiply(
+        matA.handle, transA, matB.handle, transB, matC.handle)
+
+
+def relu(in_arr, out_arr):
+    assert isinstance(in_arr, _nd.NDArray)
+    assert isinstance(out_arr, _nd.NDArray)
+    _LIB.DLGpuRelu(in_arr.handle, out_arr.handle)
+
+
+def relu_gradient(in_arr, in_grad_arr, out_arr):
+    assert isinstance(in_arr, _nd.NDArray)
+    assert isinstance(in_grad_arr, _nd.NDArray)
+    assert isinstance(out_arr, _nd.NDArray)
+    _LIB.DLGpuReluGradient(in_arr.handle, in_grad_arr.handle, out_arr.handle)
+
+
+def softmax(in_arr, out_arr):
+    assert isinstance(in_arr, _nd.NDArray)
+    assert isinstance(out_arr, _nd.NDArray)
+    _LIB.DLGpuSoftmax(in_arr.handle, out_arr.handle)
+
+
+def softmax_cross_entropy(in_arr_a, in_arr_b, out_arr):
+    assert isinstance(in_arr_a, _nd.NDArray)
+    assert isinstance(in_arr_b, _nd.NDArray)
+    assert isinstance(out_arr, _nd.NDArray)
+    _LIB.DLGpuSoftmaxCrossEntropy(
+        in_arr_a.handle, in_arr_b.handle, out_arr.handle)
+```
+
+进行测试
+
+```python
+import ndarray
+import numpy as np
+def test_array_set():
+    ctx = ndarray.gpu(0)
+    shape = (500, 200)
+    # oneslike
+    arr_x = ndarray.empty(shape, ctx=ctx)
+    gpu_op.array_set(arr_x, 1.)
+    x = arr_x.asnumpy()
+    np.testing.assert_allclose(np.ones(shape), x)
+    # zeroslike
+    gpu_op.array_set(arr_x, 0.)
+    x = arr_x.asnumpy()
+    print(x)
+    np.testing.assert_allclose(np.zeros(shape), x)
+
+def test_softmax():
+    ctx = ndarray.gpu(0)
+    shape = (400, 1000)
+    x = np.random.uniform(-5, 5, shape).astype(np.float32)
+    arr_x = ndarray.array(x, ctx=ctx)
+    arr_y = ndarray.empty(shape, ctx=ctx)
+    gpu_op.softmax(arr_x, arr_y)
+    y = arr_y.asnumpy()
+    np.testing.assert_allclose(autodiff.softmax_func(x), y, rtol=1e-5)
+```
+
+下一天来实现动态图节点，在深度学习中，节点图作为基本的元素，节点之间的计算是以图来进行的。
+
+
+
+
+
+

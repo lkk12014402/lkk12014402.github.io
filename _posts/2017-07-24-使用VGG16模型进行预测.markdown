@@ -1,0 +1,104 @@
+---
+layout:     post
+title:      "使用VGG16模型进行预测"
+subtitle:   "深度学习"
+date:       2017-07-24
+author:     "hadxu"
+header-img: "img/hadxu.jpg"
+tags:
+    - 深度学习
+    - vgg16
+---
+
+
+# 使用VGG16模型进行预测
+
+----------
+一年前，我写了个帖子关于VGG16模型的预测，没有想到，一年之后，tensorflow成为了机器学习的主要库，而keras没有变，随着tf的兴起，keras更加的友善，更加的好用。今天就将最新版本的VGG16预测模型如何使用，呈现一下，感觉keras太厉害了。
+
+----------
+## 模型读取
+
+关于VGG16模型我就不多说了，网上关于VGG16的架构说明太多了，最好的办法还是去读论文[vgg16](https://arxiv.org/abs/1409.1556).
+
+Keras也从以前的0.8版本更新到了2.0.x版本，里面很多函数名称也变了，同时函数也增加了，也变强大了。
+
+首先，VGG16模型不需要自己写了，已经集成到`keras.application`中了。
+
+	from keras.applications.vgg16 import VGG16
+	model = VGG16()
+
+这样就实现了VGG16模型，厉不厉害？
+
+接下来，我们需要进行图片的读取，预测。
+
+## 图片读取
+
+> 值得注意的是，在keras中集成了各种图片转换的函数。
+
+在VGG16中，输入图片的格式是(224,224),因此，我们需要将输入的图片转换为(224,224)。
+
+	from keras.applications import imagenet_utils
+	image = load_img('pig.jpg',target_size=(224,224))
+
+棒不棒？在之前的教程里，我使用的是cv2库来进行图片的处理。接下来将其转换成array数组形式。
+
+	image = img_to_array(image)
+	> image.shape
+	> (224, 224, 3)
+
+学过tf或者th的同学都知道，对于一张图片而言，我们需要的格式是`(1, inputShape[0], inputShape[1], 3)`，而我们现在得到的却是`(224, 224, 3)`，于是我们需要将其扩展一维，使用了numpy库。
+
+	import numpy as np
+	image = np.expand_dims(image, axis=0)
+
+我们还需要进行归一化，因为在人家训练的时候就归一化的，因此我们也需要进行归一化预测：
+
+	preprocessing = imagenet_utils.preprocess_input(image)
+
+这样就可以进行预测：
+
+	res = model.predict(preprocessing)
+
+但是出现的结果却是
+	
+	array([[  6.54041941e-08,   5.00597650e-07,   8.63425555e-07,
+          1.29564489e-06,   4.64522884e-07,   2.14730818e-07,
+          5.35710605e-08,   8.45953707e-07,   1.72045986e-07,
+          8.84614124e-08,   3.06147285e-07,   9.52549755e-08,
+          4.44584828e-07,   6.81705751e-06,   5.57451614e-08,
+          1.16999854e-06,   5.26240342e-07,   7.44493320e-07,
+          1.40785846e-06,   2.55195744e-07,   3.94183559e-07,
+          5.91166227e-08,   2.00943990e-08,   7.28795015e-08,
+          4.60500860e-06,   4.99164834e-08,   4.79540638e-08,
+          5.89783227e-08,   4.53823432e-08,   1.22334768e-07,
+			......
+		]]
+
+这样的矩阵。
+
+于是我们需要解析这段矩阵。
+
+	P = imagenet_utils.decode_predictions(res)
+
+输出结果：
+
+	for (i, (imagenetID, label, prob)) in enumerate(P[0]):
+		print("{}. {}: {:.2f}%".format(i + 1, label, prob * 100))
+
+	>
+	1. tabby: 73.48%
+	2. Egyptian_cat: 7.94%
+	3. tiger_cat: 7.05%
+	4. bow_tie: 1.92%
+	5. washbasin: 1.39%
+		
+这样，我们就完成了整个的VGG16模型的预测，而没有使用我们自己的代码，从模型选取，到图片规则化 ，都是用的keras的库，这是非常棒的，闲时可以看看keras怎么实现的，有利于提高自己的pythonic水平，哈哈。
+
+
+
+
+
+
+
+

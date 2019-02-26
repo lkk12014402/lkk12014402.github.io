@@ -1,0 +1,98 @@
+---
+layout:     post
+title:      "中文分词初体验"
+subtitle:   "cs224n"
+date:       2018-01-16
+author:     "hadxu"
+header-img: "img/in-post/cs224n/cs224n_head.png"
+tags:
+    - Tensorflow
+    - Python
+    - cs224n
+---
+
+
+
+# 2018-01-16更新
+
+突然发现一个神奇的网站，[gensim-data](https://github.com/rare-technologies/gensim-data)
+作者将一些常见的语料都收集来使用就很简单了。
+
+
+
+
+# Word2Vec
+通过cs224n前面两节课的学习，大概了解了将语料进行训练，然后构建词向量，从而获得词向量之间的关系。现在开始体验一下如何使用gensim来进行处理。
+
+1. 首先获得文本文件
+
+> 在这里，我遇到了很麻烦的问题就是编码问题，终于在一个多小时的解决下，终于将编码问题解决了。
+
+我下载的《倚天屠龙记》是GB18030的文本格式，使用sublime打开有很大的问题，于是，找了各种办法，终于找到一个简单的方法就是先以二进制形式读进来，然后根据对应的编码解决。
+
+```
+fin = open('倚天屠龙记.txt','rb').read()
+res = fin.decode('gb18030')
+open('倚天屠龙记_uft8.txt','w').write(res)
+```
+
+2. 使用jieba分词
+
+> 结巴分词是一个非常好的分词工具
+
+```
+import jieba
+fin = open('倚天屠龙记_uft8.txt','r')
+fout = open('倚天屠龙记_segment.txt','w')
+
+line = fin.readline()
+while line:
+	new_line = jieba.cut(line,cut_all=True)
+	out = ' '.join(new_line)
+
+	fout.write(out)
+	line = fin.readline()
+fin.close()
+fout.close()
+```
+
+3. 构建词向量
+
+```
+import gensim.models.word2vec as w2v
+
+model_file_name = '倚天屠龙记_model.txt'
+sentences = w2v.LineSentence('倚天屠龙记_segment.txt')
+model = w2v.Word2Vec(sentences, size=20, window=5, min_count=5, workers=4)
+model.save(model_file_name)
+```
+
+> gensim是一个非常非常棒的工具，有兴趣的可以看源码Word2Vec的关于CBOW以及Skip-Gram算法。
+
+4. 读取模型并测试
+
+```
+model = w2v.Word2Vec.load(model_file_name)
+
+for k in model.similar_by_word('张无忌'):
+	print(k[0],k[1])
+```
+
+得到的结果为
+
+```
+周芷若 0.93658447265625
+张翠山 0.9198580384254456
+殷素素 0.9133569002151489
+忙 0.8735343217849731
+杨不悔 0.8699700832366943
+点头 0.8669980764389038
+蛛 0.8548753261566162
+丁敏君 0.8513290882110596
+忍不住 0.8505219221115112
+那人 0.8498903512954712
+```
+
+看起来还是蛮有道理的，周芷若与无忌的关系还是蛮大的。
+
+> 仅仅是初体验，要实际使用还需要进行大规模语料的分析。

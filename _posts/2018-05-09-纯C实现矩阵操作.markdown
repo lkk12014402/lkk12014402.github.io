@@ -1,0 +1,445 @@
+---
+layout:     post
+title:      "C implement Matrix Operator"
+subtitle:   "C"
+date:       2018-05-09
+author:     "hadxu"
+header-img: "img/in-post/Thunder/thunder.jpg"
+tags:
+    - C
+---
+
+在深度学习中，矩阵操作是非常重要的，尤其是矩阵的求逆，LU分解，矩阵相乘等等，这篇文章就将矩阵的各种操作采用C语言实现，包括
+
+1. 矩阵定义
+2. 矩阵求逆
+3. 矩阵LU分解
+4. 矩阵相乘(点乘、叉乘)
+5. 矩阵相加
+6. 矩阵与向量的乘法
+7. and so on
+
+> 值得注意的是，开源界有各种各样的矩阵操作的库，其中著名的包括```openblas、eigen、mkl```等等，支持并行计算的有```cudablas```，本文章只是学习，锻炼自己思维之用，如果在项目中使用，还是得依赖开源库，因为像```openblas```集成了各种各样的底层加速。
+
+
+## 矩阵定义
+
+矩阵，首先是一个结构体
+
+```cpp
+typedef struct matrix{
+    int rows,cols; // 行 列
+    double **data; // 数据
+}matrix;
+```
+
+同时需要定义各种操作
+
+```cpp
+void free_matrix(matrix m); //释放矩阵
+matrix make_matrix(int rows, int cols); //新建矩阵
+matrix random_matrix(int rows, int cols, double s); //新建随机矩阵
+matrix augment_matrix(matrix m); //新建增广矩阵
+matrix matrix_invert(matrix m); //矩阵的逆
+matrix matrix_mult_matrix(matrix a, matrix b); //矩阵相乘
+```
+
+
+## make_matrix
+
+> 使用数组指针来进行分配空间
+
+```cpp
+matrix make_matrix(int rows, int cols)
+{
+    matrix m;
+    m.rows = rows;
+    m.cols = cols;
+    m.data = calloc(m.rows, sizeof(double *));
+    int i;
+    for(i=0;i<m.rows;i++)
+        m.data[i] = calloc(m.cols, sizeof(double));
+    return m;
+}
+```
+
+## random_matrix
+
+> 新建随机矩阵
+
+```cpp
+matrix random_matrix(int rows, int cols, double s)
+{
+    matrix m = make_matrix(rows,cols);
+    int i,j;
+    for(i=0;i<rows;++i){
+        for(j=0;j<cols;++j){
+            m.data[i][j] = 2*s*(rand()%1000/1000.0) - s;
+        }
+    }
+    return m;
+}
+```
+
+## free_matrix
+
+> 释放内存
+
+```cpp
+void free_matrix(matrix m)
+{
+    if (m.data) {
+        int i;
+        if (!m.shallow) for(i = 0; i < m.rows; ++i) free(m.data[i]);
+        free(m.data);
+    }
+}
+```
+
+## augment_matrix
+
+> 新建增广矩阵，增广矩阵在实际中用的特别多，主要用来求解矩阵的逆
+
+比如
+
+```
+[[1 2]             [[1 2 1 0]
+ [3 4]] 的增广矩阵为  [3 4 0 1]    
+```
+
+```cpp
+matrix augment_matrix(matrix m)
+{
+    int i,j;
+    matrix c = make_matrix(m.rows, m.cols*2);
+    for(i=0;i<m.rows;i++){
+        for(j=0;j<m.cols;j++){
+            c.data[i][j] = m.data[i][j];
+        }
+    }
+    for(j=0;j<m.rows;j++){
+       c.data[j][j+m.cols] = 1;
+    }
+    return c;
+
+}
+```
+
+## 矩阵的逆
+
+> 这是难点，也是重点，回顾一下我们求解逆矩阵怎么求？
+
+假设我们有
+
+```
+[[1,2],
+ [3,4]]
+```
+用计算机很快就能够求解得到逆矩阵。
+
+那么，如何实现这个方法，我们采用[高斯消元](https://en.wikipedia.org/wiki/Gaussian_elimination).
+
+![](https://wikimedia.org/api/rest_v1/media/math/render/svg/65d92f997de9f7ad787b95d08fcd25dca828dd93)
+
+我们以上面的例子为example
+
+
+```
+[[1,2]      [[1 2 | 1 0]     [[3 4 | 0 1]    [[1 4/3 | 0 1/3]
+ [3,4]] =>   [3 4 | 0 1]] =>  [1 2 | 1 0]] => [1  2  | 1  0]]
+
+   [[1 4/3 | 0 1/3]      [[1 4/3 | 0   1/3]     [[1 0 | -2 1]]
+=>  [0 2/3 | 1 -1/3]] =>  [0  1  | 3/2 -1/2]] => [0 1 | 3/2 -1/2]]   
+```
+
+最终，我们需要的逆矩阵为
+
+```
+[[-2 1],
+ [1.5 -0.5]]
+```
+
+那么，我们采用C语言如何实现这样的算法呢？
+
+```cpp
+matrix matrix_invert(matrix m)
+{
+    matrix none = {0};
+    // 必须要为方阵
+    if(m.rows != m.cols){
+        fprintf(stderr, "Matrix not square\n");
+        return none;
+    }
+
+    matrix c = augment_matrix(m);
+    print_matrix(c);
+
+    int i,j,k;
+    for(k=0;k<c.rows;k++){
+        double p=0.;
+        int index = -1;
+        // 找最大的元
+        for(i=k;i<c.rows;++i){
+            double val = fabs(c.data[i][k]);
+            if(val>p){
+                p=val;
+                index = i;
+            }
+        }
+        if(index==-1){
+            fprintf(stderr,"Can't do it, sorry!\n");
+            free_matrix(c);
+            return none;
+        }
+        // 交换元
+        double *swap = c.data[index];
+        c.data[index] = c.data[k];
+        c.data[k] = swap;
+
+        double val = c.data[k][k];
+        c.data[k][k] = 1;
+        for(j = k+1; j < c.cols; ++j){
+            c.data[k][j] /= val;
+        }
+        for(i = k+1; i < c.rows; ++i){
+            double s = -c.data[i][k];
+            c.data[i][k] = 0;
+            for(j = k+1; j < c.cols; ++j){
+                c.data[i][j] +=  s*c.data[k][j];
+            }
+        }
+    }
+
+    for(k = c.rows-1; k > 0; --k){
+        for(i = 0; i < k; ++i){
+            double s = -c.data[i][k];
+            c.data[i][k] = 0;
+            for(j = k+1; j < c.cols; ++j){
+                c.data[i][j] += s*c.data[k][j];
+            }
+        }
+    }
+
+    matrix inv = make_matrix(m.rows, m.cols);
+    for(i = 0; i < m.rows; ++i){
+        for(j = 0; j < m.cols; ++j){
+            inv.data[i][j] = c.data[i][j+m.cols];
+        }
+    }
+    free_matrix(c);
+    return inv;
+}
+```
+
+## matrix_mult_matrix
+
+> 矩阵相乘
+
+```cpp
+matrix matrix_mult_matrix(matrix a, matrix b)
+{
+    assert(a.cols == b.rows);
+    int i, j, k;
+    matrix p = make_matrix(a.rows, b.cols);
+    for(i = 0; i < p.rows; ++i){
+        for(j = 0; j < p.cols; ++j){
+            for(k = 0; k < a.cols; ++k){
+                p.data[i][j] += a.data[i][k]*b.data[k][j];
+            }
+        }
+    }
+    return p;
+}
+```
+
+##  make_identity
+
+> 单位矩阵
+
+```cpp
+matrix make_identity(int rows, int cols)
+{
+    int i;
+    matrix m = make_matrix(rows, cols);
+    for(i = 0; i < rows && i < cols; ++i){
+        m.data[i][i] = 1;
+    }
+    return m;
+}
+```
+
+## matrix_elmult_matrix
+
+> 矩阵点乘
+
+```cpp
+matrix matrix_elmult_matrix(matrix a, matrix b)
+{
+    assert(a.cols == b.cols);
+    assert(a.rows == b.rows);
+    int i, j;
+    matrix p = make_matrix(a.rows, a.cols);
+    for(i = 0; i < p.rows; ++i){
+        for(j = 0; j < p.cols; ++j){
+            p.data[i][j] = a.data[i][j] * b.data[i][j];
+        }
+    }
+    return p;
+}
+```
+
+## matrix_sub_matrix
+
+> 矩阵相减
+
+```cpp
+matrix matrix_sub_matrix(matrix a, matrix b)
+{
+    assert(a.cols == b.cols);
+    assert(a.rows == b.rows);
+    int i, j;
+    matrix p = make_matrix(a.rows, a.cols);
+    for(i = 0; i < p.rows; ++i){
+        for(j = 0; j < p.cols; ++j){
+            p.data[i][j] = a.data[i][j] - b.data[i][j];
+        }
+    }
+    return p;
+}
+```
+
+## transpose_matrix
+
+> 矩阵转置
+
+```cpp
+matrix transpose_matrix(matrix m)
+{
+    matrix t;
+    t.rows = m.cols;
+    t.cols = m.rows;
+    t.data = calloc(t.rows, sizeof(double *));
+    t.shallow = 0;
+    int i, j;
+    for(i = 0; i < t.rows; ++i){
+        t.data[i] = calloc(t.cols, sizeof(double));
+        for(j = 0; j < t.cols; ++j){
+            t.data[i][j] = m.data[j][i];
+        }
+    }
+    return t;
+}
+```
+
+## LUP_solve
+
+> LU分解是矩阵操作中非常重要的一种分解形式，形式为```PA = LU```，其中```L,U```分别为下三角矩阵、上三角矩阵。这种分解好处就是大大地降低了计算的复杂度。
+
+该算法在《算法导论》中的第841页中有描述。
+
+```cpp
+int *in_place_LUP(matrix m) {
+    int *pivot = calloc(m.rows, sizeof(int));
+    if (m.rows != m.cols) {
+        fprintf(stderr, "Matrix not square\n");
+        return 0;
+    }
+
+    int i, j, k;
+    for (k = 0; k < m.rows; ++k) pivot[k] = k;
+    for (k = 0; k < m.rows; ++k) {
+        double p = 0.;
+        int index = -1;
+        for (i = k; i < m.rows; ++i) {
+            double val = fabs(m.data[i][k]);
+            if (val > p) {
+                p = val;
+                index = i;
+            }
+        }
+        if (index == -1) {
+            fprintf(stderr, "Matrix is singular\n");
+            return 0;
+        }
+        // 交换行 并记录下来
+        int swapi = pivot[k];
+        pivot[k] = pivot[index];
+        pivot[index] = swapi;
+
+        double *swap = m.data[index];
+        m.data[index] = m.data[k];
+        m.data[k] = swap;
+        print_matrix(m);
+
+        for (i = k + 1; i < m.rows; ++i) {
+            m.data[i][k] = m.data[i][k] / m.data[k][k];
+            for (j = k + 1; j < m.cols; ++j) {
+                m.data[i][j] -= m.data[i][k] * m.data[k][j];
+            }
+            print_matrix(m);
+        }
+
+    }
+    return pivot;
+}
+```
+
+## LUP_solve
+
+> 使用LU分解来求解方程，首先通过LU分解，得到LU矩阵，通过LU矩阵的正向替换和反向替换能够求解方程，具体过程在《算法导论》817页中有非常详细的介绍。
+
+```cpp
+double *LUP_solve(matrix L, matrix U, int *p, double *b) {
+    int i, j;
+    double *c = calloc(L.rows, sizeof(double));
+    // 正向替换
+    for (i = 0; i < L.rows; ++i) {
+        int pi = p[i];
+        c[i] = b[pi];
+        for (j = 0; j < i; ++j) {
+            c[i] -= L.data[i][j] * c[j];
+        }
+    }
+    // 反向替换
+    for (i = U.rows - 1; i >= 0; --i) {
+        for (j = i + 1; j < U.cols; ++j) {
+            c[i] -= U.data[i][j] * c[j];
+        }
+        c[i] /= U.data[i][i];
+    }
+    return c;
+}
+```
+## solve_system
+
+> 最小二乘法
+
+```
+Ax = b  => A.TAx = A.Tb => x=(A.TA).inv A.t b
+```
+那么实现如下：
+
+```cpp
+matrix solve_system(matrix M, matrix b)
+{
+    matrix none = {0};
+    matrix Mt = transpose_matrix(M);
+    matrix MtM = matrix_mult_matrix(Mt, M);
+    matrix MtMinv = matrix_invert(MtM);
+    if(!MtMinv.data) return none;
+    matrix Mdag = matrix_mult_matrix(MtMinv, Mt);
+    matrix a = matrix_mult_matrix(Mdag, b);
+    free_matrix(Mt); free_matrix(MtM); free_matrix(MtMinv); free_matrix(Mdag);
+    return a;
+}
+```
+
+
+
+
+
+
+
+
+
+

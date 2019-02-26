@@ -1,0 +1,137 @@
+---
+layout:     post
+title:      "CUDA编程"
+subtitle:   "CUDA"
+date:       2018-03-08
+author:     "hadxu"
+header-img: ""
+tags:
+    - CUDA
+    - Python
+    - cse599
+---
+
+# CUDA编程
+
+> 这里是收录的关于CUDA的习题
+
+### hello world
+
+```cpp
+#include <cstdio>
+#include <cuda.h>
+#include <cuda_runtime.h>
+
+__global__ void hello_gpu()
+{
+    printf("\"hello world,says the gpu!\"");
+}
+
+int main()
+{
+    hello_gpu <<<10,1>>>();
+    cudaDeviceSynchronize();
+}
+```
+
+> cudaDeviceSynchronize:等GPU全部执行完毕，在回到CPU中。
+
+
+## 实现并行计算求高斯模糊
+```cpp
+__global__ void filter( const unsigned char * image, unsigned char * new_image, const int width, const int height )
+{
+    int i = threadIdx.y + blockIdx.y * blockDim.y;
+    int j = threadIdx.x + blockIdx.x * blockDim.x;
+    if( i < height && j < width ) {
+        float sum = 0.f;
+        for( int k = 0; k < 3; k++ ) {
+            for( int l = 0; l < 3; l++ ) {
+                int K = i - 1 + k;
+                int L = j - 1 + l;
+                // using 'symmetric' boundary here
+                if( K < 0 ) K = -K;
+                if( L < 0 ) L = -L;
+                if( K >= height ) K = 2 * height - K;
+                if( L >= width )  L = 2 * width - L;
+                // adding the contributions
+                sum += image[K * width + L] * 0.111111;
+            }
+        }
+        new_image[i * width + j] = sum;
+    }
+}
+
+dim3 n_threads( 16, 16 );
+dim3 n_blocks( ( image.width + n_threads.x - 1 ) / n_threads.x, ( image.height + n_threads.y - 1 ) / n_threads.y );
+filter <<< n_blocks, n_threads>>>( dev_image, dev_new_image, image.width, image.height );
+```
+
+## 并行计算实现规约（并行求sum）
+
+```cpp
+#include <cuda_runtime.h>
+#include <stdio.h>
+
+__global__ void reduceInterleaved (int *g_idata, int *g_odata, unsigned int n)
+{
+    unsigned int tid = threadIdx.x;
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int *idata = g_idata + blockIdx.x * blockDim.x;
+
+    if(idx >= n) return;
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+        {
+            idata[tid] += idata[tid + stride];
+        }
+
+        __syncthreads();
+    }
+
+    // write result for this block to global mem
+    if (tid == 0) g_odata[blockIdx.x] = idata[0];
+}
+
+int main()
+
+{
+    srand(1234);
+    int size = 1 << 24; 
+    int blocksize = 512;
+    dim3 block (blocksize, 1);
+    dim3 grid  ((size + block.x - 1) / block.x, 1);
+    size_t bytes = size * sizeof(int);
+    int *h_idata = (int *) malloc(bytes);
+    int *h_odata = (int *) malloc(grid.x * sizeof(int));
+    int *tmp     = (int *) malloc(bytes);
+    for (int i = 0; i < size; i++)
+    {
+        h_idata[i] = (int)( rand() & 0xFF );
+    }
+    memcpy (tmp, h_idata, bytes);
+    
+    int gpu_sum = 0;
+    int *d_idata = NULL;
+    int *d_odata = NULL;
+    cudaMalloc((void **) &d_idata, bytes);
+    cudaMalloc((void **) &d_odata, grid.x * sizeof(int));
+    int cpu_sum = 0;
+    for(int i=0;i<size;i++)
+        cpu_sum += h_idata[i];
+    // 将数据拷贝到设备
+    cudaMemcpy(d_idata, h_idata, bytes, cudaMemcpyHostToDevice);
+    cudaDeviceSynchronize();
+    reduceInterleaved<<<grid, block>>>(d_idata, d_odata, size);
+    // 拷回来
+    cudaDeviceSynchronize();
+    cudaMemcpy(h_odata, d_odata, grid.x * sizeof(int),
+                     cudaMemcpyDeviceToHost);
+    for (int i = 0; i < grid.x; i++) gpu_sum += h_odata[i];
+
+    printf("gpu sum %d cpu_sum %d",gpu_sum, cpu_sum);
+}
+```
