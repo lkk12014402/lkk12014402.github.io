@@ -1,14 +1,14 @@
 {
-    "name": "hadxu-blog",
-    "title": "hadxu Blog",
-    "author": "hadxu <hadxu123@gmail.com>",
+    "name": "lkk-blog",
+    "title": "lkk Blog",
+    "author": "lkk <641553140@qq.com>",
     "version": "1.7.0",
-    "homepage": "https://hadxu.github.io",
+    "homepage": "https://lkk12014402.github.io",
     "repository": {
         "type": "git",
-        "url": "https://github.com/hadxu/hadxu.github.io"
+        "url": "https://github.com/lkk12014402/lkk12014402.github.io"
     },
-    "bugs": "https://github.com/hadxu/hadxu.github.io/issues",
+    "bugs": "https://github.com/lkk12014402/lkk12014402.github.io/issues",
     "devDependencies": {
         "grunt": "~0.4.5",
         "grunt-contrib-less": "~0.11.4",
