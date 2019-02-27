@@ -3,8 +3,7 @@ layout:     post
 title:      "记录一次keras与pytorch的源码比较"
 subtitle:   "keras、pytorch"
 date:       2018-08-08
-author:     "hadxu"
-header-img: "img/hadxu.jpg"
+author:     "lkk"
 tags:
     - Python
     - keras

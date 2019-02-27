@@ -3,7 +3,7 @@ layout:     post
 title:      "Pytorch RNN LSTM GRU详解"
 subtitle:   "LSTM"
 date:       2018-02-26
-author:     "hadxu"
+author:     "lkk"
 header-img: "img/in-post/cs224n/cs224n_head.png"
 tags:
     - Pytorch

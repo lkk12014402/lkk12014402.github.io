@@ -3,7 +3,7 @@ layout:     post
 title:      "RSA背后原理以及Python实现"
 subtitle:   "Cryptography"
 date:       2018-04-01
-author:     "hadxu"
+author:     "lkk"
 header-img: ""
 tags:
     - Cryptography

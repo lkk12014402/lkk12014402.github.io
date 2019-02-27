@@ -3,7 +3,7 @@ layout:     post
 title:      "Keras+Redis+Flask"
 subtitle:   "Keras"
 date:       2018-02-06
-author:     "hadxu"
+author:     "lkk"
 header-img: "img/in-post/cs224n/cs224n_head.png"
 tags:
     - Redis
