@@ -50,7 +50,7 @@ MNIST 数据集来自美国国家标准与技术研究所, National Institute of
 
 下面使用python来对MNIST数据集进行解析：
 
-1. 将数据集解析为图片形式存储
+1.将数据集解析为图片形式存储
 
 ```python
 import numpy as np
@@ -129,7 +129,7 @@ if __name__ == '__main__':
     decode_data(train_images_idx3_ubyte_file, train_labels_idx1_ubyte_file)
 ```
 
-2. 只读到内存中查看
+2.只读到内存中查看
 
 ```python
 def decode_idx3_ubyte(idx3_ubyte_file):
@@ -289,7 +289,7 @@ if __name__ == '__main__':
 
 ```
 
-3. 借助numpy库解析更为简洁高效
+3.借助numpy库解析更为简洁高效
 
 参考：https://blog.csdn.net/simple_the_best/article/details/75267863
 
@@ -299,7 +299,7 @@ if __name__ == '__main__':
 
 > 环境：Pytorch 1.0 （有木有GPU均可）
 
-1. 导入相应模块、下载数据
+1.导入相应模块、下载数据
 
 ```python
 import torch
@@ -337,7 +337,7 @@ print(dataset_sizes)
 ````
 
 
-2. 可视化
+2.可视化
 
 ```python
 import matplotlib.pyplot as plt
@@ -367,7 +367,7 @@ print(' '.join('%5s' % classes[labels[j]] for j in range(batch_size)))
 ![png](/img/output_3_0.png)
 
 
-3. 定义卷积神经网络
+3.定义卷积神经网络
 
 ```python
 # 定义 Convolution Network 模型
@@ -392,14 +392,14 @@ class Cnn(nn.Module):
 
 ```
 
-4. 初始化模型
+4.初始化模型
 
 ```python
 model = Cnn(1, 10)  # 图片大小是28x28
 model = model.to(device)
 ```
 
-5. 定义loss和optimizer
+5.定义loss和optimizer
 
 ```python
 # 定义loss和optimizer
@@ -407,7 +407,7 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(model.parameters(), lr=learning_rate)
 ```
 
-6. 定义训练函数
+6.定义训练函数
 
 ```python
 def run_model(model, criterion, optimizer, data_set, data_size, scheduler=None, phase='train', num_epochs=25):
@@ -471,7 +471,7 @@ def run_model(model, criterion, optimizer, data_set, data_size, scheduler=None, 
     return model, metrics
 ```
 
-7. 开始训练
+7.开始训练
 
 ```python
 model, metrics = run_model(model, criterion, optimizer, dataloaders, dataset_sizes, phase='train', num_epochs=25)
@@ -558,7 +558,7 @@ model, metrics = run_model(model, criterion, optimizer, dataloaders, dataset_siz
 
 ```
 
-8. 可视化结果
+8.可视化结果
 
 ```python
 from scipy.interpolate import interp1d
