@@ -592,7 +592,7 @@ def plot_metrics(metrics, title=None):
     ax[1].xaxis.set_major_locator(MultipleLocator(1))
     plt.show()
 
-plot_metrics(metrics, "train")
+plot_metrics(metrics, "Mnist-----train")
 ```
 
 ![](/img/output_10_0.png)
