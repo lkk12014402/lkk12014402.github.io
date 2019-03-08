@@ -392,6 +392,7 @@ class Cnn(nn.Module):
 
 ```
 
+
 4.初始化模型
 
 ```python
@@ -399,7 +400,40 @@ model = Cnn(1, 10)  # 图片大小是28x28
 model = model.to(device)
 ```
 
-5.定义loss和optimizer
+5.查看网络结构
+
+```python
+from torchsummary import summary
+summary(model, input_size=(1, 28, 28))
+```
+
+```python
+----------------------------------------------------------------
+        Layer (type)               Output Shape         Param #
+================================================================
+            Conv2d-1            [-1, 6, 28, 28]              60
+              ReLU-2            [-1, 6, 28, 28]               0
+         MaxPool2d-3            [-1, 6, 14, 14]               0
+            Conv2d-4           [-1, 16, 10, 10]           2,416
+              ReLU-5           [-1, 16, 10, 10]               0
+         MaxPool2d-6             [-1, 16, 5, 5]               0
+            Linear-7                  [-1, 120]          48,120
+            Linear-8                   [-1, 84]          10,164
+            Linear-9                   [-1, 10]             850
+================================================================
+Total params: 61,610
+Trainable params: 61,610
+Non-trainable params: 0
+----------------------------------------------------------------
+Input size (MB): 0.00
+Forward/backward pass size (MB): 0.11
+Params size (MB): 0.24
+Estimated Total Size (MB): 0.35
+----------------------------------------------------------------
+```
+
+
+6.定义loss和optimizer
 
 ```python
 # 定义loss和optimizer
@@ -407,7 +441,7 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(model.parameters(), lr=learning_rate)
 ```
 
-6.定义训练函数
+7.定义训练函数
 
 ```python
 def run_model(model, criterion, optimizer, data_set, data_size, scheduler=None, phase='train', num_epochs=25):
@@ -471,7 +505,95 @@ def run_model(model, criterion, optimizer, data_set, data_size, scheduler=None, 
     return model, metrics
 ```
 
-7.开始训练
+或者使用下面的函数，边训练边用测试集测试
+
+```python
+def run_model(model, criterion, optimizer, data_set, data_size, scheduler=None, num_epochs=25):
+    since = time.time()
+
+#     best_model_wts = copy.deepcopy(model.state_dict())
+#     best_acc = 0.0
+    confusion_matrix = tnt.meter.ConfusionMeter(10, normalized=False)
+    metrics = {'train_acc': [], 'train_loss': [], 'test_acc': [], 'test_loss': [], 'cm': []}
+    
+    for epoch in range(num_epochs):
+        print('Epoch {}/{}'.format(epoch, num_epochs - 1))
+        print('-' * 10)
+
+        # Each epoch has a training and validation phase
+        for phase in ['train', 'test']:
+            if phase == 'train':
+#                 scheduler.step()
+                model.train()  # Set model to training mode
+            else:
+                model.eval()   # Set model to evaluate mode
+
+            running_loss = 0.0
+            running_corrects = 0
+
+            # Iterate over data.
+            for inputs, labels in data_set[phase]:
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+
+                # zero the parameter gradients
+                optimizer.zero_grad()
+
+                # forward
+                # track history if only in train
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    loss = criterion(outputs, labels)
+
+                    # backward + optimize only if in training phase
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+                    else:
+                        confusion_matrix.add(outputs.data, labels.data)
+
+                # statistics
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+
+            epoch_loss = running_loss / data_size[phase]
+            epoch_acc = running_corrects.double().item() / data_size[phase]
+
+#             metrics['train_acc'].append(epoch_acc)
+#             metrics['train_loss'].append(epoch_loss)
+        
+            print('{} Loss: {:.4f} Acc: {:.4f}'.format(
+                phase, epoch_loss, epoch_acc))
+            
+            if phase == 'train':
+                metrics['train_acc'].append(epoch_acc)
+                metrics['train_loss'].append(epoch_loss)
+            else:
+                metrics['test_acc'].append(epoch_acc)
+                metrics['test_loss'].append(epoch_loss)
+                cm = confusion_matrix.value().copy()
+                metrics['cm'].append(cm)
+#             # deep copy the model
+#             if phase == 'val' and epoch_acc > best_acc:
+#                 best_acc = epoch_acc
+#                 best_model_wts = copy.deepcopy(model.state_dict())
+
+#         print()
+
+    time_elapsed = time.time() - since
+    print('Training complete in {:.0f}m {:.0f}s'.format(
+        time_elapsed // 60, time_elapsed % 60))
+#     print('Best val Acc: {:4f}'.format(best_acc))
+
+    # load best model weights
+#     model.load_state_dict(best_model_wts)
+
+    return model, metrics
+```
+
+
+8.开始训练
 
 ```python
 model, metrics = run_model(model, criterion, optimizer, dataloaders, dataset_sizes, phase='train', num_epochs=25)
@@ -558,7 +680,7 @@ model, metrics = run_model(model, criterion, optimizer, dataloaders, dataset_siz
 
 ```
 
-8.可视化结果
+9.可视化结果
 
 ```python
 from scipy.interpolate import interp1d
